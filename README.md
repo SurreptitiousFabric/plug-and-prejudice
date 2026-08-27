@@ -9,8 +9,9 @@ that a plugin is safe.
 
 ## Status
 
-The project is in its architecture and threat-model phase. There is no scanner
-or installable Omarchy plugin yet.
+The project is under active development. The bounded inventory scanner and its
+Bubblewrap broker exist, but the language analyzers, stable report schema, and
+installable Omarchy interface are not complete. Do not treat this as a release.
 
 The approved first release will:
 
@@ -23,7 +24,8 @@ The approved first release will:
 - exclude cloud LLM integration from version 1.
 
 See [the architecture](docs/architecture.md), [threat model](docs/threat-model.md),
-and [security policy](SECURITY.md) before contributing.
+tested [sandbox policy](docs/sandbox-policy.md), and [security policy](SECURITY.md)
+before contributing.
 
 ## Core safety rule
 
