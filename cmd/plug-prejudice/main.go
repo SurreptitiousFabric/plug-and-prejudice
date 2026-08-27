@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/analyze"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/inventory"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
 )
@@ -40,8 +41,10 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "scan target: %v\n", err)
 		return 1
 	}
+	analysis := analyze.Sources(result.Contents)
+	limitations := append(result.Limitations, analysis.Limitations...)
 	status := report.StatusComplete
-	if len(result.Errors) > 0 || len(result.Limitations) > 0 {
+	if len(result.Errors) > 0 || len(limitations) > 0 {
 		status = report.StatusIncomplete
 	}
 	r := report.Report{
@@ -59,11 +62,13 @@ func run() int {
 			RootDigest:  result.RootDigest,
 			FileCount:   len(result.Files),
 			ReadBytes:   result.ReadBytes,
+			Manifest:    analysis.Manifest,
 		},
-		Inventory:   result.Files,
-		Findings:    []report.Finding{},
-		Limitations: result.Limitations,
-		Errors:      result.Errors,
+		Inventory:   nonNil(result.Files),
+		Operations:  nonNil(analysis.Operations),
+		Findings:    nonNil(analysis.Findings),
+		Limitations: nonNil(limitations),
+		Errors:      nonNil(result.Errors),
 	}
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetEscapeHTML(true)
@@ -73,4 +78,11 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+func nonNil[T any](values []T) []T {
+	if values == nil {
+		return []T{}
+	}
+	return values
 }

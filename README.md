@@ -27,6 +27,9 @@ See [the architecture](docs/architecture.md), [threat model](docs/threat-model.m
 tested [sandbox policy](docs/sandbox-policy.md), and [security policy](SECURITY.md)
 before contributing.
 
+Detection behavior and current gaps are documented in the
+[analysis rule catalogue](docs/analysis-rules.md).
+
 ## Core safety rule
 
 The target plugin is hostile input. Never source, import, execute, or otherwise

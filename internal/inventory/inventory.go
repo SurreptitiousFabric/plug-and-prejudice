@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strings"
 	"syscall"
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
@@ -34,6 +35,7 @@ func DefaultLimits() Limits {
 
 type Result struct {
 	Files       []report.File
+	Contents    map[string][]byte
 	Limitations []report.Limitation
 	Errors      []report.ScanError
 	ReadBytes   int64
@@ -79,13 +81,13 @@ func Scan(target string, limits Limits) (Result, error) {
 	}
 	defer root.Close()
 
-	w := &walker{limits: limits}
+	w := &walker{limits: limits, result: Result{Contents: make(map[string][]byte)}}
 	if err := w.walk(root, ".", 0); err != nil {
 		return Result{}, err
 	}
 	sort.Slice(w.result.Files, func(i, j int) bool { return w.result.Files[i].Path < w.result.Files[j].Path })
 	for _, file := range w.result.Files {
-		w.digest.add(file.Path, file.Kind, file.Mode, fmt.Sprint(file.Size), file.SHA256, file.LinkTarget)
+		w.digest.add(file.Path, file.Kind, file.Mode, fmt.Sprint(file.Size), file.SHA256, file.LinkTarget, file.SkipReason)
 	}
 	w.result.RootDigest = w.digest.sum()
 	return w.result, nil
@@ -146,7 +148,11 @@ func (w *walker) walk(root *os.Root, relative string, depth int) error {
 			_ = child.Close()
 		case info.Mode().IsRegular():
 			file.Kind = "regular"
-			w.inspectRegular(root, name, info, &file)
+			if isGitDatabasePath(childPath) {
+				file.SkipReason = "git-internal-database"
+			} else {
+				w.inspectRegular(root, name, info, &file)
+			}
 			w.result.Files = append(w.result.Files, file)
 		default:
 			file.Kind = specialKind(info.Mode())
@@ -155,6 +161,11 @@ func (w *walker) walk(root *os.Root, relative string, depth int) error {
 		}
 	}
 	return nil
+}
+
+func isGitDatabasePath(name string) bool {
+	clean := path.Clean(name)
+	return strings.HasPrefix(clean, ".git/objects/") || strings.HasPrefix(clean, ".git/logs/")
 }
 
 func (w *walker) inspectRegular(root *os.Root, name string, expected fs.FileInfo, out *report.File) {
@@ -191,6 +202,7 @@ func (w *walker) inspectRegular(root *os.Root, name string, expected fs.FileInfo
 	out.SHA256 = hex.EncodeToString(hash[:])
 	out.ContentType = http.DetectContentType(data)
 	out.Inspected = true
+	w.result.Contents[out.Path] = data
 }
 
 func (w *walker) limit(code, description, filePath string) {

@@ -104,6 +104,24 @@ func TestScanRejectsInvalidLimits(t *testing.T) {
 	}
 }
 
+func TestScanDoesNotSpendSourceBudgetOnGitObjectDatabase(t *testing.T) {
+	target := t.TempDir()
+	mustWrite(t, filepath.Join(target, ".git", "objects", "pack", "large.pack"), strings.Repeat("x", 32))
+	limits := DefaultLimits()
+	limits.MaxFileBytes = 8
+	result, err := Scan(target, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := byPath(result)[".git/objects/pack/large.pack"]
+	if file.Inspected || file.SkipReason != "git-internal-database" {
+		t.Fatalf("Git database file was not explicitly skipped: %#v", file)
+	}
+	if hasLimitation(result, "max-file-bytes") {
+		t.Fatalf("Git database consumed source-analysis limit: %#v", result.Limitations)
+	}
+}
+
 func mustWrite(t *testing.T, name, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
