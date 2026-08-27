@@ -9,6 +9,11 @@ as stable file descriptors, verifies their identity and type, and gives those
 descriptors to Bubblewrap. Target-controlled text never enters a Bubblewrap
 option. Endpoint symlinks are rejected.
 
+The broker also verifies that the pinned scanner is an executable ELF with no
+program interpreter or imported shared libraries. Release builds therefore use
+`CGO_ENABLED=0`. This preserves the deliberately empty runtime filesystem and
+turns an incorrectly linked package into a clear fail-closed error.
+
 The sandbox is built from an empty mount namespace. It contains only:
 
 - the pinned static scanner at `/app/plug-prejudice`, read-only;

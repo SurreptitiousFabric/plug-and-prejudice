@@ -43,6 +43,21 @@ func TestOpenPinnedRejectsEndpointSymlink(t *testing.T) {
 	}
 }
 
+func TestRequireStaticELFRejectsNonELF(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "scanner")
+	if err := os.WriteFile(name, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := requireStaticELF(file); err == nil {
+		t.Fatal("non-ELF scanner was accepted")
+	}
+}
+
 func TestBubblewrapIsolation(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Bubblewrap integration requires Linux")
@@ -57,6 +72,17 @@ func TestBubblewrapIsolation(t *testing.T) {
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build trusted sandbox probe: %v: %s", err, output)
+	}
+	probeFile, err := os.Open(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := requireStaticELF(probeFile); err != nil {
+		_ = probeFile.Close()
+		t.Fatalf("static probe was rejected: %v", err)
+	}
+	if err := probeFile.Close(); err != nil {
+		t.Fatal(err)
 	}
 	target := t.TempDir()
 	if err := os.WriteFile(filepath.Join(target, "manifest.json"), []byte("{}\n"), 0o600); err != nil {

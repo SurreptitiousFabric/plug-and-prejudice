@@ -33,6 +33,8 @@ LLM dependency.
 ### Omarchy wrapper
 
 - Uses documented Omarchy plugin discovery and native visual conventions.
+- Obtains a bounded list of valid installed directory IDs from the trusted
+  broker without reading plugin-authored manifests merely to populate the UI.
 - Passes a plugin identity to the broker without invoking a shell interpreter.
 - Consumes a versioned structured report rather than scraping terminal output.
 - Treats every report string as hostile plain text.

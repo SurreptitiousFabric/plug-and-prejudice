@@ -27,6 +27,9 @@ See [the architecture](docs/architecture.md), [threat model](docs/threat-model.m
 tested [sandbox policy](docs/sandbox-policy.md), and [security policy](SECURITY.md)
 before contributing.
 
+The versioned structured output and hostile-presentation rules are described in
+the [report contract](docs/report-contract.md).
+
 Detection behavior and current gaps are documented in the
 [analysis rule catalogue](docs/analysis-rules.md).
 

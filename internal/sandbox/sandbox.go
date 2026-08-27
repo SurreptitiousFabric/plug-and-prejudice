@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"debug/elf"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +44,9 @@ func (r Runner) Run(ctx context.Context, scannerPath, targetPath string) ([]byte
 		return nil, fmt.Errorf("pin scanner: %w", err)
 	}
 	defer scanner.Close()
+	if err := requireStaticELF(scanner); err != nil {
+		return nil, fmt.Errorf("validate scanner executable: %w", err)
+	}
 	target, err := openPinned(targetPath, true)
 	if err != nil {
 		return nil, fmt.Errorf("pin target: %w", err)
@@ -107,6 +111,30 @@ func (r Runner) Run(ctx context.Context, scannerPath, targetPath string) ([]byte
 		return nil, fmt.Errorf("sandboxed scanner failed: %w: %s", waitErr, safeDiagnostic(diagnostics.data))
 	}
 	return out.data, nil
+}
+
+func requireStaticELF(scanner *os.File) error {
+	parsed, err := elf.NewFile(scanner)
+	if err != nil {
+		return fmt.Errorf("scanner is not a supported ELF executable: %w", err)
+	}
+	defer parsed.Close()
+	if parsed.Type != elf.ET_EXEC && parsed.Type != elf.ET_DYN {
+		return fmt.Errorf("scanner ELF type %s is not executable", parsed.Type)
+	}
+	for _, program := range parsed.Progs {
+		if program.Type == elf.PT_INTERP {
+			return errors.New("scanner is dynamically linked; build it with CGO_ENABLED=0")
+		}
+	}
+	libraries, err := parsed.ImportedLibraries()
+	if err != nil {
+		return fmt.Errorf("inspect scanner libraries: %w", err)
+	}
+	if len(libraries) != 0 {
+		return fmt.Errorf("scanner imports shared libraries: %v", libraries)
+	}
+	return nil
 }
 
 func Arguments(scannerSource, targetSource string) []string {
