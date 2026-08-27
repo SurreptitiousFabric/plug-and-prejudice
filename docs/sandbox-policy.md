@@ -42,8 +42,10 @@ TMPDIR=/tmp
 ```
 
 The broker imposes a 30-second wall-clock timeout, a 16 MiB report limit, and a
-64 KiB diagnostic limit. Scanner-level file, depth, and byte limits apply inside
-the process. Additional systemd memory, CPU, and process accounting remains a
+64 KiB diagnostic limit. Scanner-level limits currently include 10,000 entries,
+32 directory levels, 2 MiB per source file, 32 MiB total retained source, 64 MiB
+per ELF file, and 128 MiB total ELF input. Source and binary budgets are
+independent. Additional systemd memory, CPU, and process accounting remains a
 release requirement and is not claimed by the current implementation.
 
 ## Tested guarantees

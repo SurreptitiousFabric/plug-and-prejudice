@@ -37,6 +37,7 @@ func Sources(contents map[string][]byte) Result {
 			analyzeQML(name, data, &result)
 		}
 	}
+	annotateScopes(contents, nil, &result)
 	return result
 }
 

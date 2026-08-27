@@ -42,6 +42,7 @@ func run() int {
 		return 1
 	}
 	analysis := analyze.Sources(result.Contents)
+	analyze.Inventory(result.Files, result.Contents, &analysis)
 	limitations := append(result.Limitations, analysis.Limitations...)
 	status := report.StatusComplete
 	if len(result.Errors) > 0 || len(limitations) > 0 {
@@ -62,6 +63,7 @@ func run() int {
 			RootDigest:  result.RootDigest,
 			FileCount:   len(result.Files),
 			ReadBytes:   result.ReadBytes,
+			BinaryBytes: result.BinaryBytes,
 			Manifest:    analysis.Manifest,
 		},
 		Inventory:   nonNil(result.Files),

@@ -18,6 +18,18 @@ Commands are recorded neutrally in `operations[]`. A command name alone is not
 a security finding. Findings correlate operations with context and reference
 the operation IDs from which they were derived.
 
+Operations and findings carry one of three conservative scope labels:
+
+- `runtime`: declared QML entry-point code or a path reached through bounded
+  textual references from runtime code;
+- `repository-tooling`: conventional tests, examples, documentation, CI,
+  validation, build, package, and release tooling; or
+- `unknown`: reachability has not been established either way.
+
+Reachability propagates only through already-inspected text. A referenced binary
+can become runtime-scoped, but its bytes are never interpreted as source. Scope
+describes apparent reachability, not whether an operation will actually run.
+
 ## Manifest contract
 
 The scanner parses `manifest.json` strictly as data. It preserves declared
@@ -74,11 +86,21 @@ plugin behavior and are excluded from semantic analysis. Real non-sample Git
 hooks remain visible. Git database files remain in inventory but do not consume
 source-content limits.
 
+## Native ELF files
+
+ELF files use a separate bounded byte budget. The scanner hashes the exact file
+and parses class, byte order, architecture, ELF type, interpreter, imported
+libraries, and symbol-table presence with Go's non-executing `debug/elf` reader.
+Binary bytes never enter the source analyzer map.
+
+Every ELF produces an `unknown` finding and an explicit
+`native-binary-behavior` limitation. Metadata does not establish executable
+behavior or prove that a binary corresponds to available source. Scope is
+derived separately from textual runtime reachability.
+
 ## Known gaps
 
-- Operation reachability/scope does not yet distinguish runtime entry-point
-  code from development and release tooling.
-- Python, JavaScript outside QML, native binary headers/imports, filesystem
-  paths, persistence, credential access, and domain extraction remain pending.
+- Python, JavaScript outside QML, filesystem paths, persistence, credential
+  access, and domain extraction remain pending.
 - QML property aliases and constructed command arrays can remain dynamic.
 - The report schema is versioned but not yet declared stable.

@@ -30,6 +30,14 @@ const (
 	ConfidenceLow    Confidence = "low"
 )
 
+type Scope string
+
+const (
+	ScopeRuntime Scope = "runtime"
+	ScopeTooling Scope = "repository-tooling"
+	ScopeUnknown Scope = "unknown"
+)
+
 type Status string
 
 const (
@@ -63,6 +71,7 @@ type Target struct {
 	RootDigest  string    `json:"rootDigest,omitempty"`
 	FileCount   int       `json:"fileCount"`
 	ReadBytes   int64     `json:"readBytes"`
+	BinaryBytes int64     `json:"binaryBytes"`
 	Manifest    *Manifest `json:"manifest,omitempty"`
 }
 
@@ -76,20 +85,33 @@ type Manifest struct {
 }
 
 type File struct {
-	Path        string `json:"path"`
-	Kind        string `json:"kind"`
-	Mode        string `json:"mode"`
-	Size        int64  `json:"size"`
-	SHA256      string `json:"sha256,omitempty"`
-	ContentType string `json:"contentType,omitempty"`
-	LinkTarget  string `json:"linkTarget,omitempty"`
-	Inspected   bool   `json:"inspected"`
-	SkipReason  string `json:"skipReason,omitempty"`
+	Path        string  `json:"path"`
+	Kind        string  `json:"kind"`
+	Mode        string  `json:"mode"`
+	Size        int64   `json:"size"`
+	SHA256      string  `json:"sha256,omitempty"`
+	ContentType string  `json:"contentType,omitempty"`
+	LinkTarget  string  `json:"linkTarget,omitempty"`
+	Inspected   bool    `json:"inspected"`
+	SkipReason  string  `json:"skipReason,omitempty"`
+	Binary      *Binary `json:"binary,omitempty"`
+}
+
+type Binary struct {
+	Format      string   `json:"format"`
+	Class       string   `json:"class"`
+	ByteOrder   string   `json:"byteOrder"`
+	Machine     string   `json:"machine"`
+	Type        string   `json:"type"`
+	Interpreter string   `json:"interpreter,omitempty"`
+	Libraries   []string `json:"libraries"`
+	HasSymbols  bool     `json:"hasSymbols"`
 }
 
 type Operation struct {
 	ID         string     `json:"id"`
 	Category   string     `json:"category"`
+	Scope      Scope      `json:"scope"`
 	Command    string     `json:"command,omitempty"`
 	Arguments  []string   `json:"arguments,omitempty"`
 	Dynamic    bool       `json:"dynamic"`
@@ -103,6 +125,7 @@ type Finding struct {
 	Severity    Severity   `json:"severity"`
 	Confidence  Confidence `json:"confidence"`
 	Category    string     `json:"category"`
+	Scope       Scope      `json:"scope"`
 	Title       string     `json:"title"`
 	Explanation string     `json:"explanation"`
 	Evidence    []Evidence `json:"evidence"`

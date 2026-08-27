@@ -1,7 +1,9 @@
 package inventory
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"debug/elf"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,18 +20,22 @@ import (
 )
 
 type Limits struct {
-	MaxFiles     int
-	MaxDepth     int
-	MaxFileBytes int64
-	MaxReadBytes int64
+	MaxFiles           int
+	MaxDepth           int
+	MaxFileBytes       int64
+	MaxReadBytes       int64
+	MaxBinaryFileBytes int64
+	MaxBinaryReadBytes int64
 }
 
 func DefaultLimits() Limits {
 	return Limits{
-		MaxFiles:     10_000,
-		MaxDepth:     32,
-		MaxFileBytes: 2 << 20,
-		MaxReadBytes: 32 << 20,
+		MaxFiles:           10_000,
+		MaxDepth:           32,
+		MaxFileBytes:       2 << 20,
+		MaxReadBytes:       32 << 20,
+		MaxBinaryFileBytes: 64 << 20,
+		MaxBinaryReadBytes: 128 << 20,
 	}
 }
 
@@ -39,6 +45,7 @@ type Result struct {
 	Limitations []report.Limitation
 	Errors      []report.ScanError
 	ReadBytes   int64
+	BinaryBytes int64
 	RootDigest  string
 }
 
@@ -65,7 +72,7 @@ func (h *hashWriter) sum() string {
 }
 
 func Scan(target string, limits Limits) (Result, error) {
-	if limits.MaxFiles <= 0 || limits.MaxDepth <= 0 || limits.MaxFileBytes <= 0 || limits.MaxReadBytes <= 0 {
+	if limits.MaxFiles <= 0 || limits.MaxDepth <= 0 || limits.MaxFileBytes <= 0 || limits.MaxReadBytes <= 0 || limits.MaxBinaryFileBytes <= 0 || limits.MaxBinaryReadBytes <= 0 {
 		return Result{}, errors.New("all inventory limits must be positive")
 	}
 	info, err := os.Stat(target)
@@ -169,14 +176,6 @@ func isGitDatabasePath(name string) bool {
 }
 
 func (w *walker) inspectRegular(root *os.Root, name string, expected fs.FileInfo, out *report.File) {
-	if expected.Size() > w.limits.MaxFileBytes {
-		w.limit("max-file-bytes", "file exceeds the individual inspection limit", out.Path)
-		return
-	}
-	if w.result.ReadBytes+expected.Size() > w.limits.MaxReadBytes {
-		w.limit("max-total-bytes", "total content inspection limit reached", out.Path)
-		return
-	}
 	f, err := root.Open(name)
 	if err != nil {
 		w.scanError("open-file", err.Error(), out.Path)
@@ -186,6 +185,24 @@ func (w *walker) inspectRegular(root *os.Root, name string, expected fs.FileInfo
 	opened, err := f.Stat()
 	if err != nil || !sameFile(expected, opened) || !opened.Mode().IsRegular() {
 		w.scanError("changed-during-scan", "file identity or type changed while it was opened", out.Path)
+		return
+	}
+	header := make([]byte, 4)
+	_, headerErr := io.ReadFull(f, header)
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		w.scanError("seek-file", err.Error(), out.Path)
+		return
+	}
+	if headerErr == nil && isELF(header) {
+		w.inspectELF(f, expected, out)
+		return
+	}
+	if expected.Size() > w.limits.MaxFileBytes {
+		w.limit("max-file-bytes", "non-ELF file exceeds the individual source inspection limit", out.Path)
+		return
+	}
+	if w.result.ReadBytes+expected.Size() > w.limits.MaxReadBytes {
+		w.limit("max-total-bytes", "total source-content inspection limit reached", out.Path)
 		return
 	}
 	data, err := io.ReadAll(io.LimitReader(f, w.limits.MaxFileBytes+1))
@@ -203,6 +220,75 @@ func (w *walker) inspectRegular(root *os.Root, name string, expected fs.FileInfo
 	out.ContentType = http.DetectContentType(data)
 	out.Inspected = true
 	w.result.Contents[out.Path] = data
+}
+
+func (w *walker) inspectELF(f *os.File, expected fs.FileInfo, out *report.File) {
+	if expected.Size() > w.limits.MaxBinaryFileBytes {
+		w.limit("max-binary-file-bytes", "ELF file exceeds the individual binary inspection limit", out.Path)
+		return
+	}
+	if w.result.BinaryBytes+expected.Size() > w.limits.MaxBinaryReadBytes {
+		w.limit("max-binary-total-bytes", "total ELF inspection limit reached", out.Path)
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(f, w.limits.MaxBinaryFileBytes+1))
+	if err != nil {
+		w.scanError("read-binary", err.Error(), out.Path)
+		return
+	}
+	if int64(len(data)) != expected.Size() {
+		w.scanError("changed-during-scan", "ELF size changed while it was read", out.Path)
+		return
+	}
+	w.recordELF(data, out)
+}
+
+func (w *walker) recordELF(data []byte, out *report.File) {
+	w.result.BinaryBytes += int64(len(data))
+	hash := sha256.Sum256(data)
+	out.SHA256 = hex.EncodeToString(hash[:])
+	out.ContentType = "application/x-elf"
+	out.Inspected = true
+	parsed, err := elf.NewFile(bytes.NewReader(data))
+	if err != nil {
+		w.limit("elf-parse-error", "ELF header was recognized but metadata parsing failed: "+err.Error(), out.Path)
+		return
+	}
+	defer parsed.Close()
+	libraries, err := parsed.ImportedLibraries()
+	if err != nil {
+		libraries = []string{}
+	}
+	sort.Strings(libraries)
+	symbols, _ := parsed.Symbols()
+	out.Binary = &report.Binary{
+		Format: "ELF", Class: parsed.Class.String(), ByteOrder: parsed.Data.String(), Machine: parsed.Machine.String(),
+		Type: parsed.Type.String(), Interpreter: elfInterpreter(parsed), Libraries: nonNilStrings(libraries), HasSymbols: len(symbols) > 0,
+	}
+}
+
+func elfInterpreter(file *elf.File) string {
+	for _, program := range file.Progs {
+		if program.Type != elf.PT_INTERP || program.Filesz == 0 || program.Filesz > 4096 {
+			continue
+		}
+		data, err := io.ReadAll(io.LimitReader(program.Open(), 4096))
+		if err == nil {
+			return strings.TrimRight(string(data), "\x00")
+		}
+	}
+	return ""
+}
+
+func isELF(data []byte) bool {
+	return len(data) >= 4 && bytes.Equal(data[:4], []byte{0x7f, 'E', 'L', 'F'})
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 func (w *walker) limit(code, description, filePath string) {

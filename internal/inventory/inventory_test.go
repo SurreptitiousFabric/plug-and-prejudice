@@ -122,6 +122,40 @@ func TestScanDoesNotSpendSourceBudgetOnGitObjectDatabase(t *testing.T) {
 	}
 }
 
+func TestScanHashesAndDescribesELFWithoutAddingItToSourceContents(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	name := filepath.Join(target, "helper")
+	if err := os.WriteFile(name, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	limits := DefaultLimits()
+	limits.MaxFileBytes = 16
+	limits.MaxBinaryFileBytes = int64(len(data)) + 1
+	limits.MaxBinaryReadBytes = int64(len(data)) + 1
+	result, err := Scan(target, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := byPath(result)["helper"]
+	if file.Binary == nil || file.Binary.Format != "ELF" || file.Binary.Machine == "" || file.SHA256 == "" {
+		t.Fatalf("ELF metadata missing: %#v", file)
+	}
+	if _, exists := result.Contents["helper"]; exists {
+		t.Fatal("ELF bytes were exposed to source analyzers")
+	}
+	if result.ReadBytes != 0 || result.BinaryBytes != int64(len(data)) {
+		t.Fatalf("budgets misclassified: source=%d binary=%d", result.ReadBytes, result.BinaryBytes)
+	}
+}
+
 func mustWrite(t *testing.T, name, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
