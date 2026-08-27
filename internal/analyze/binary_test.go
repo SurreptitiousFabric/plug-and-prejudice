@@ -18,4 +18,7 @@ func TestBinaryInventoryStatesBehaviorIsUnknown(t *testing.T) {
 	if len(result.Limitations) != 1 || result.Limitations[0].Code != "native-binary-behavior" {
 		t.Fatalf("binary limitation missing: %#v", result.Limitations)
 	}
+	if result.Limitations[0].Scope != report.ScopeUnknown {
+		t.Fatalf("binary limitation scope missing: %#v", result.Limitations[0])
+	}
 }

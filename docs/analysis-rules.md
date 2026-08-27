@@ -18,6 +18,10 @@ Commands are recorded neutrally in `operations[]`. A command name alone is not
 a security finding. Findings correlate operations with context and reference
 the operation IDs from which they were derived.
 
+`resources[]` records accessed domains, filesystem paths, persistence
+mechanisms, access modes, sensitivity, confidence, scope, and the originating
+operation without turning every capability into a warning.
+
 Operations and findings carry one of three conservative scope labels:
 
 - `runtime`: declared QML entry-point code or a path reached through bounded
@@ -62,6 +66,16 @@ Current correlations:
   successful authorization remains unknown.
 - `eval` is medium-severity dynamic execution because runtime text is reparsed
   as shell syntax.
+- network-capable commands expose literal HTTP(S) hostnames as neutral resources;
+  a constructed endpoint remains the explicit value `<dynamic>`;
+- parsed filesystem commands expose read, write, and delete targets;
+- credential-related paths produce high findings while preserving the attempted
+  access mode;
+- systemd enablement, cron modification, and shell/autostart startup paths
+  produce medium persistence findings; and
+- deletion ranges from low for an explicit ordinary target through medium for
+  recursive/dynamic paths, high for credential/home/system targets, and critical
+  only for literal filesystem-root deletion.
 
 An ordinary download is an operation, not a warning. Comments and quoted words
 do not become commands. Dynamic word portions are represented as `<dynamic>`
@@ -101,6 +115,18 @@ derived separately from textual runtime reachability.
 ## Known gaps
 
 - Python, JavaScript outside QML, filesystem paths, persistence, credential
-  access, and domain extraction remain pending.
+  APIs beyond recognized process commands remain pending.
 - QML property aliases and constructed command arrays can remain dynamic.
 - The report schema is versioned but not yet declared stable.
+
+## Python parser gate
+
+Python files are inventoried and can become runtime-reachable, but are not yet
+claimed as semantically analyzed. CPython `ast` would require mounting and
+executing an additional interpreter process in the deterministic sandbox;
+official Go Tree-sitter bindings require CGO; older pure-Go Python parsers are
+language-version obsolete. A newer pure-Go Tree-sitter runtime supports a
+selective embedded Python grammar, but adding that young, substantial parser
+runtime is a pending supply-chain and robustness decision. Until reviewed, the
+scanner must expose the gap rather than substitute regex matches or execute
+Python to inspect it.

@@ -53,6 +53,7 @@ type Report struct {
 	Target        Target       `json:"target"`
 	Inventory     []File       `json:"inventory"`
 	Operations    []Operation  `json:"operations"`
+	Resources     []Resource   `json:"resources"`
 	Findings      []Finding    `json:"findings"`
 	Limitations   []Limitation `json:"limitations"`
 	Errors        []ScanError  `json:"errors"`
@@ -119,6 +120,19 @@ type Operation struct {
 	Evidence   Evidence   `json:"evidence"`
 }
 
+type Resource struct {
+	ID                 string     `json:"id"`
+	Kind               string     `json:"kind"`
+	Access             string     `json:"access"`
+	Value              string     `json:"value"`
+	Sensitive          bool       `json:"sensitive"`
+	Dynamic            bool       `json:"dynamic"`
+	Scope              Scope      `json:"scope"`
+	Confidence         Confidence `json:"confidence"`
+	Evidence           Evidence   `json:"evidence"`
+	RelatedOperationID string     `json:"relatedOperationId"`
+}
+
 type Finding struct {
 	ID          string     `json:"id"`
 	Claim       ClaimType  `json:"claim"`
@@ -145,6 +159,7 @@ type Limitation struct {
 	Code        string `json:"code"`
 	Description string `json:"description"`
 	Path        string `json:"path,omitempty"`
+	Scope       Scope  `json:"scope,omitempty"`
 }
 
 type ScanError struct {

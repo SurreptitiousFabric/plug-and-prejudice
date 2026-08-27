@@ -14,6 +14,7 @@ import (
 type Result struct {
 	Manifest    *report.Manifest
 	Operations  []report.Operation
+	Resources   []report.Resource
 	Findings    []report.Finding
 	Limitations []report.Limitation
 }
@@ -37,7 +38,9 @@ func Sources(contents map[string][]byte) Result {
 			analyzeQML(name, data, &result)
 		}
 	}
+	deriveCapabilities(&result)
 	annotateScopes(contents, nil, &result)
+	addLanguageCoverageLimitations(contents, &result)
 	return result
 }
 

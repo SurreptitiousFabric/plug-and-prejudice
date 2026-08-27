@@ -68,6 +68,7 @@ func run() int {
 		},
 		Inventory:   nonNil(result.Files),
 		Operations:  nonNil(analysis.Operations),
+		Resources:   nonNil(analysis.Resources),
 		Findings:    nonNil(analysis.Findings),
 		Limitations: nonNil(limitations),
 		Errors:      nonNil(result.Errors),

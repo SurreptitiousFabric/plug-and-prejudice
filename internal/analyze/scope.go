@@ -15,6 +15,14 @@ func annotateScopes(contents map[string][]byte, files []report.File, result *Res
 		result.Operations[index].Scope = scope
 		operationScopes[result.Operations[index].ID] = scope
 	}
+	for index := range result.Resources {
+		resource := &result.Resources[index]
+		if scope, exists := operationScopes[resource.RelatedOperationID]; exists {
+			resource.Scope = scope
+		} else {
+			resource.Scope = report.ScopeUnknown
+		}
+	}
 	for index := range result.Findings {
 		finding := &result.Findings[index]
 		if len(finding.Related) > 0 {
@@ -23,6 +31,12 @@ func annotateScopes(contents map[string][]byte, files []report.File, result *Res
 			finding.Scope = scopeForPath(finding.Evidence[0].Path, runtimeReferences)
 		} else {
 			finding.Scope = report.ScopeUnknown
+		}
+	}
+	for index := range result.Limitations {
+		limitation := &result.Limitations[index]
+		if limitation.Scope == "" && limitation.Path != "" {
+			limitation.Scope = scopeForPath(limitation.Path, runtimeReferences)
 		}
 	}
 }
