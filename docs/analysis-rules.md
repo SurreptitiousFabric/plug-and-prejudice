@@ -89,6 +89,11 @@ literals. Literal arrays become structured operations; expressions are marked
 dynamic. This is intentionally not represented as a complete QML semantic
 parser.
 
+Imperative JavaScript assignments such as `process.command = value` are
+recognized only as a coverage boundary outside comments and strings. They force
+an explicit incomplete limitation; the scanner does not guess the executable or
+arguments without semantic JavaScript analysis.
+
 Inline `bash -c`-style programs are parsed with the shell AST before shell or
 download-and-execute findings are emitted. A literal QML `curl` command alone
 does not produce a warning.
@@ -114,8 +119,13 @@ derived separately from textual runtime reachability.
 
 ## Known gaps
 
-- Python, JavaScript outside QML, filesystem paths, persistence, credential
-  APIs beyond recognized process commands remain pending.
+- Python, JavaScript outside QML, TypeScript, Go, Ruby, Perl, Lua, and PHP do
+  not yet receive syntax-tree semantic analysis. Runtime or unknown-scope files
+  produce explicit coverage limitations; conventional tooling-only paths do
+  not become runtime gaps.
+- Filesystem, persistence, credential, and network facts are currently derived
+  from recognized process commands; native APIs and constructed values may be
+  missed.
 - QML property aliases and constructed command arrays can remain dynamic.
 - The report schema is versioned but not yet declared stable.
 

@@ -12,3 +12,19 @@ the product's behavior.
 
 Do not commit credentials, private plugin source, copied personal configuration,
 or hostile fixtures whose ordinary execution could harm a contributor's system.
+
+Run the deterministic checks with:
+
+```bash
+go test ./...
+go test -race ./...
+go vet ./...
+go mod verify
+scripts/test-qml.sh
+```
+
+`scripts/test-installed-integration.sh` is deliberately separate because it
+reviews a real installed plugin. Set `PLUG_PREJUDICE_TEST_PLUGIN` to an installed
+plugin ID to select the target. The test invokes only the trusted reviewer and
+passes the target to the scanner as data through the normal Bubblewrap policy.
+Never point ordinary test discovery at executable hostile fixtures.

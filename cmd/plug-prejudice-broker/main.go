@@ -64,7 +64,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	output, err := runner.Run(context.Background(), *scanner, target)
+	output, err := runner.Run(context.Background(), *scanner, target, *pluginID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "review plugin: %v\n", err)
 		return 1

@@ -48,6 +48,40 @@ func analyzeQML(name string, data []byte, result *Result) {
 			classifyQMLShell(op, result)
 		}
 	}
+	if hasImperativeQMLCommandAssignment(data) {
+		result.Limitations = append(result.Limitations, report.Limitation{
+			Code:        "qml-imperative-command-analysis-unavailable",
+			Description: "QML assigns a Process command imperatively. The bounded lexical analyzer does not resolve JavaScript assignments, so the resulting executable and arguments remain unknown.",
+			Path:        name,
+		})
+	}
+}
+
+func hasImperativeQMLCommandAssignment(data []byte) bool {
+	for index := 0; index < len(data); {
+		next, _, ok := nextQMLToken(data, index)
+		if !ok {
+			return false
+		}
+		index = next
+		dot := skipQMLSpaceAndComments(data, index)
+		if dot >= len(data) || data[dot] != '.' {
+			continue
+		}
+		after, property, ok := nextQMLToken(data, dot+1)
+		if !ok {
+			return false
+		}
+		index = after
+		if property != "command" {
+			continue
+		}
+		equals := skipQMLSpaceAndComments(data, after)
+		if equals < len(data) && data[equals] == '=' && (equals+1 >= len(data) || data[equals+1] != '=') {
+			return true
+		}
+	}
+	return false
 }
 
 func classifyQMLShell(op report.Operation, result *Result) {

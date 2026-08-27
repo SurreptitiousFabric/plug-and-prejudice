@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.surreptitiousfabric.plug-and-prejudice",
+  "name": "Plug & Prejudice",
+  "version": "0.1.0-dev",
+  "author": "Surreptitious Fabric",
+  "description": "Review an installed Omarchy plugin without executing it.",
+  "kinds": [
+    "panel"
+  ],
+  "entryPoints": {
+    "panel": "Panel.qml"
+  }
+}

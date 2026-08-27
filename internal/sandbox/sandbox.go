@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -32,12 +33,15 @@ func DefaultRunner() (Runner, error) {
 	return Runner{Bubblewrap: bwrap, Timeout: DefaultTimeout}, nil
 }
 
-func (r Runner) Run(ctx context.Context, scannerPath, targetPath string) ([]byte, error) {
+func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName string) ([]byte, error) {
 	if r.Bubblewrap == "" {
 		return nil, errors.New("bubblewrap path is empty")
 	}
 	if r.Timeout <= 0 {
 		return nil, errors.New("sandbox timeout must be positive")
+	}
+	if !validDisplayName(displayName) {
+		return nil, errors.New("sandbox display name is invalid")
 	}
 	scanner, err := openPinned(scannerPath, false)
 	if err != nil {
@@ -55,7 +59,7 @@ func (r Runner) Run(ctx context.Context, scannerPath, targetPath string) ([]byte
 
 	timed, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(timed, r.Bubblewrap, Arguments("/proc/self/fd/3", "/proc/self/fd/4")...)
+	cmd := exec.CommandContext(timed, r.Bubblewrap, Arguments("/proc/self/fd/3", "/proc/self/fd/4", displayName)...)
 	cmd.ExtraFiles = []*os.File{scanner, target}
 	cmd.Env = []string{}
 	stdout, err := cmd.StdoutPipe()
@@ -137,7 +141,7 @@ func requireStaticELF(scanner *os.File) error {
 	return nil
 }
 
-func Arguments(scannerSource, targetSource string) []string {
+func Arguments(scannerSource, targetSource, displayName string) []string {
 	return []string{
 		"--die-with-parent",
 		"--new-session",
@@ -156,8 +160,24 @@ func Arguments(scannerSource, targetSource string) []string {
 		"--dir", "/tmp",
 		"--chdir", "/target",
 		"--",
-		"/app/plug-prejudice", "--target", "/target", "--sandboxed",
+		"/app/plug-prejudice", "--target", "/target", "--display-name", displayName, "--sandboxed",
 	}
+}
+
+func validDisplayName(value string) bool {
+	if value == "" || len(value) > 255 {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'A' && character <= 'Z') ||
+			(character >= 'a' && character <= 'z') ||
+			(character >= '0' && character <= '9') ||
+			(index > 0 && (character == '.' || character == '_' || character == '-')) {
+			continue
+		}
+		return false
+	}
+	return !strings.Contains(value, "..")
 }
 
 func openPinned(name string, wantDirectory bool) (*os.File, error) {

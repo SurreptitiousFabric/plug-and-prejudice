@@ -10,6 +10,7 @@ import (
 
 func main() {
 	_ = flag.String("target", "", "ignored compatibility flag")
+	_ = flag.String("display-name", "", "ignored compatibility flag")
 	_ = flag.Bool("sandboxed", false, "ignored compatibility flag")
 	flag.Parse()
 	result := map[string]bool{

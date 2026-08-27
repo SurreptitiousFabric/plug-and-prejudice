@@ -13,13 +13,14 @@ import (
 )
 
 func TestArgumentsKeepNetworkAndHostFilesystemUnshared(t *testing.T) {
-	args := Arguments("/proc/self/fd/3", "/proc/self/fd/4")
+	args := Arguments("/proc/self/fd/3", "/proc/self/fd/4", "org.example.plugin")
 	joined := strings.Join(args, " ")
 	for _, required := range []string{
 		"--unshare-all", "--unshare-user", "--disable-userns",
 		"--assert-userns-disabled", "--cap-drop ALL", "--clearenv",
 		"--ro-bind /proc/self/fd/3 /app/plug-prejudice",
 		"--ro-bind /proc/self/fd/4 /target",
+		"--display-name org.example.plugin",
 	} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("sandbox arguments omit %q: %s", required, joined)
@@ -28,6 +29,19 @@ func TestArgumentsKeepNetworkAndHostFilesystemUnshared(t *testing.T) {
 	for _, forbidden := range []string{"--share-net", "--bind /home", "--ro-bind /home", "--proc /proc"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("sandbox arguments contain forbidden %q: %s", forbidden, joined)
+		}
+	}
+}
+
+func TestValidDisplayName(t *testing.T) {
+	for _, value := range []string{"", ".hidden", "../escape", "two..dots", "name/child", strings.Repeat("a", 256)} {
+		if validDisplayName(value) {
+			t.Errorf("validDisplayName(%q) = true", value)
+		}
+	}
+	for _, value := range []string{"org.example.plugin", "Plugin-1", "plugin_name"} {
+		if !validDisplayName(value) {
+			t.Errorf("validDisplayName(%q) = false", value)
 		}
 	}
 }
@@ -89,7 +103,7 @@ func TestBubblewrapIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := Runner{Bubblewrap: bwrap, Timeout: 5 * time.Second}
-	output, err := runner.Run(context.Background(), probe, target)
+	output, err := runner.Run(context.Background(), probe, target, "org.example.probe")
 	if err != nil {
 		t.Fatalf("run sandbox probe: %v", err)
 	}

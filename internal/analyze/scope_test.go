@@ -52,3 +52,15 @@ func TestRuntimeReachabilityPropagatesThroughInspectableWrapper(t *testing.T) {
 		t.Fatalf("transitively referenced binary scope = %q, want runtime", finding.Scope)
 	}
 }
+
+func TestGitIndexCannotTransitivelyPromoteRuntimeScope(t *testing.T) {
+	contents := withValidManifest(map[string][]byte{
+		"Runtime.qml": []byte("property int selectedIndex: 0\n"),
+		".git/index":  []byte("helper.go\x00"),
+		"helper.go":   []byte("package main\n"),
+	})
+	references := runtimeReferencedPaths(contents, nil, nil)
+	if references[".git/index"] || references["helper.go"] {
+		t.Fatalf("Git metadata promoted runtime reachability: %#v", references)
+	}
+}

@@ -45,11 +45,15 @@ func runtimeReferencedPaths(contents map[string][]byte, files []report.File, man
 	references := make(map[string]bool)
 	candidates := make(map[string]bool, len(contents)+len(files))
 	for candidate := range contents {
-		candidates[filepath.ToSlash(filepath.Clean(candidate))] = true
+		clean := filepath.ToSlash(filepath.Clean(candidate))
+		if !isGitMetadataPath(clean) {
+			candidates[clean] = true
+		}
 	}
 	for _, file := range files {
-		if file.Kind == "regular" {
-			candidates[filepath.ToSlash(filepath.Clean(file.Path))] = true
+		clean := filepath.ToSlash(filepath.Clean(file.Path))
+		if file.Kind == "regular" && !isGitMetadataPath(clean) {
+			candidates[clean] = true
 		}
 	}
 	if manifest != nil {
@@ -79,6 +83,11 @@ func runtimeReferencedPaths(contents map[string][]byte, files []report.File, man
 		}
 	}
 	return references
+}
+
+func isGitMetadataPath(name string) bool {
+	clean := filepath.ToSlash(filepath.Clean(name))
+	return clean == ".git" || strings.HasPrefix(clean, ".git/")
 }
 
 func markTextReferences(text, source string, candidates, references map[string]bool) {

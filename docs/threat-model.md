@@ -81,7 +81,7 @@ payload before disclosure.
 
 | Attack | Initial controls |
 |---|---|
-| Target code execution | No imports; no target exec; no shell evaluation; sandbox denies execution policy |
+| Target code execution | Scanner has no target-execution or subprocess path; no imports or shell evaluation; empty runtime limits exploit utility |
 | Arbitrary file read | Empty filesystem view; only target is read-only mounted |
 | Host modification | Dedicated output and temporary areas; read-only runtime; no session sockets |
 | Network access | Private network namespace with no shared host network |
@@ -95,6 +95,9 @@ payload before disclosure.
 ## Residual risks
 
 - Scanner or kernel vulnerabilities may escape containment.
+- The target bind is read-only but not proven `noexec`; containment does not
+  replace the scanner's invariant that target content is never passed to an
+  execution API.
 - Static analysis can miss generated, encrypted, environment-dependent, or
   semantically complex behavior.
 - Binary inventory cannot establish what a native helper will do at runtime.

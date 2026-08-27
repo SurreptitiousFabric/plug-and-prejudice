@@ -59,3 +59,24 @@ func TestQMLPrivilegeCommandUsesSharedContextRule(t *testing.T) {
 		t.Fatalf("privilege evidence lost QML source: %#v", finding)
 	}
 }
+
+func TestQMLImperativeCommandAssignmentCreatesCoverageLimitation(t *testing.T) {
+	result := Sources(withValidManifest(map[string][]byte{
+		"Worker.qml": []byte("Process { id: worker }\nfunction run() { worker.command = [root.binary, '--check'] }\n"),
+	}))
+	limitation := limitationByCode(t, result, "qml-imperative-command-analysis-unavailable")
+	if limitation.Path != "Worker.qml" || limitation.Scope != report.ScopeRuntime {
+		t.Fatalf("imperative QML gap not scoped: %#v", limitation)
+	}
+}
+
+func TestQMLImperativeCommandLookalikesAreIgnored(t *testing.T) {
+	result := Sources(withValidManifest(map[string][]byte{
+		"Worker.qml": []byte("// worker.command = ['sudo']\nproperty string example: \"worker.command = ['sudo']\"\n"),
+	}))
+	for _, limitation := range result.Limitations {
+		if limitation.Code == "qml-imperative-command-analysis-unavailable" {
+			t.Fatalf("imperative command lookalike created limitation: %#v", limitation)
+		}
+	}
+}

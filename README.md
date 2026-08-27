@@ -9,9 +9,10 @@ that a plugin is safe.
 
 ## Status
 
-The project is under active development. The bounded inventory scanner and its
-Bubblewrap broker exist, but the language analyzers, stable report schema, and
-installable Omarchy interface are not complete. Do not treat this as a release.
+The project is under active development. The bounded scanner, fail-closed
+Bubblewrap broker, and tested Omarchy panel prototype exist, but analysis
+coverage, resource accounting, release packaging, and release-stable report
+schema are not complete. Do not treat this as a release.
 
 The approved first release will:
 
@@ -29,6 +30,8 @@ before contributing.
 
 The versioned structured output and hostile-presentation rules are described in
 the [report contract](docs/report-contract.md).
+The panel interaction and same-process limitations are described in the
+[UI contract](docs/ui.md).
 
 Detection behavior and current gaps are documented in the
 [analysis rule catalogue](docs/analysis-rules.md).

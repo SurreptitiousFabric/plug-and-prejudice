@@ -26,6 +26,7 @@ func run() int {
 	flags := flag.NewFlagSet("plug-prejudice", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	target := flags.String("target", "", "plugin directory to inspect as hostile input")
+	displayName := flags.String("display-name", "", "trusted display label supplied by the containment broker")
 	sandboxed := flags.Bool("sandboxed", false, "record that a trusted broker established containment")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return 2
@@ -59,7 +60,7 @@ func run() int {
 			Sandboxed:      *sandboxed,
 		},
 		Target: report.Target{
-			DisplayName: filepath.Base(filepath.Clean(*target)),
+			DisplayName: targetDisplayName(*target, *displayName),
 			RootDigest:  result.RootDigest,
 			FileCount:   len(result.Files),
 			ReadBytes:   result.ReadBytes,
@@ -81,6 +82,13 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+func targetDisplayName(target, supplied string) string {
+	if supplied != "" {
+		return supplied
+	}
+	return filepath.Base(filepath.Clean(target))
 }
 
 func nonNil[T any](values []T) []T {
