@@ -47,7 +47,7 @@ func TestRuntimeReachabilityPropagatesThroughInspectableWrapper(t *testing.T) {
 	files := []report.File{{Path: "bin/helper-arm64", Kind: "regular", Binary: &report.Binary{Format: "ELF"}}}
 	result := Sources(contents)
 	Inventory(files, contents, &result)
-	finding := findingByCategory(t, result, "native-binary")
+	finding := findingByCategory(t, result, "native-binary-metadata")
 	if finding.Scope != report.ScopeRuntime {
 		t.Fatalf("transitively referenced binary scope = %q, want runtime", finding.Scope)
 	}
@@ -62,5 +62,60 @@ func TestGitIndexCannotTransitivelyPromoteRuntimeScope(t *testing.T) {
 	references := runtimeReferencedPaths(contents, nil, nil)
 	if references[".git/index"] || references["helper.go"] {
 		t.Fatalf("Git metadata promoted runtime reachability: %#v", references)
+	}
+}
+
+func TestDeclaredRuntimeEntryPointOverridesToolingPathConvention(t *testing.T) {
+	contents := map[string][]byte{
+		"manifest.json":     []byte(`{"schemaVersion":1,"id":"example.test","name":"Test","version":"1","kinds":["panel"],"entryPoints":{"panel":"tests/payload.qml"}}`),
+		"tests/payload.qml": []byte("Process { command: [\"runtime-command\"] }\nproperty string helper: \"tests/helper.sh\"\n"),
+		"tests/helper.sh":   []byte("#!/bin/sh\nhelper-command\n"),
+	}
+	result := Sources(contents)
+	for _, operation := range result.Operations {
+		if operation.Scope != report.ScopeRuntime {
+			t.Fatalf("proven runtime operation %q scope = %q", operation.Command, operation.Scope)
+		}
+	}
+}
+
+func TestUndeclaredEntryPointKeyDoesNotPromoteShellRuntime(t *testing.T) {
+	contents := withValidManifest(map[string][]byte{
+		"hidden.sh": []byte("#!/bin/sh\nunknown-command\n"),
+	})
+	contents["manifest.json"] = []byte(`{"schemaVersion":1,"id":"example.test","name":"Test","version":"1","kinds":["panel"],"entryPoints":{"panel":"Panel.qml","unused":"hidden.sh"}}`)
+	result := Sources(contents)
+	for _, operation := range result.Operations {
+		if operation.Command == "unknown-command" && operation.Scope != report.ScopeUnknown {
+			t.Fatalf("undeclared entry-point key promoted scope: %#v", operation)
+		}
+	}
+}
+
+func TestToolingBasenameUsesTokensNotSubstrings(t *testing.T) {
+	if toolingPath("scripts/latest.sh") {
+		t.Fatal("latest.sh was classified as test tooling")
+	}
+	for _, name := range []string{"scripts/test-helper.sh", "scripts/release.sh", "scripts/check_plugin.sh"} {
+		if !toolingPath(name) {
+			t.Errorf("conventional tooling path %q was not recognized", name)
+		}
+	}
+}
+
+func TestUnknownInheritsAffectedOperationOrEvidenceScope(t *testing.T) {
+	result := Sources(withValidManifest(map[string][]byte{
+		"tests/check.py":    []byte("import subprocess\ncommand = choose()\nsubprocess.run(command)\n"),
+		"scripts/broken.py": []byte("def broken(:\n"),
+	}))
+	if len(result.Unknowns) != 2 {
+		t.Fatalf("unknowns = %#v", result.Unknowns)
+	}
+	scopes := map[string]report.Scope{}
+	for _, unknown := range result.Unknowns {
+		scopes[string(unknown.Reason)] = unknown.Scope
+	}
+	if scopes[string(report.UnknownUnresolvedFlow)] != report.ScopeTooling || scopes[string(report.UnknownParserFailure)] != report.ScopeUnknown {
+		t.Fatalf("unknown scopes = %#v", scopes)
 	}
 }

@@ -12,12 +12,17 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/safetext"
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/trustedexec"
 )
 
+const bubblewrapPath = "/usr/bin/bwrap"
+
 const (
-	MaxReportBytes = 16 << 20
+	MaxReportBytes = policy.MaxReportBytes
 	MaxStderrBytes = 64 << 10
-	DefaultTimeout = 30 * time.Second
 )
 
 type Runner struct {
@@ -26,14 +31,18 @@ type Runner struct {
 }
 
 func DefaultRunner() (Runner, error) {
-	bwrap, err := exec.LookPath("bwrap")
+	bwrap, err := trustedexec.Require(bubblewrapPath)
 	if err != nil {
-		return Runner{}, errors.New("bubblewrap is required; refusing to scan without containment")
+		return Runner{}, fmt.Errorf("trusted bubblewrap is required; refusing to scan without containment: %w", err)
 	}
-	return Runner{Bubblewrap: bwrap, Timeout: DefaultTimeout}, nil
+	return Runner{Bubblewrap: bwrap, Timeout: policy.WallTime}, nil
 }
 
-func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName string) ([]byte, error) {
+func (r Runner) Run(ctx context.Context, scannerPath string, target *os.File, displayName string) ([]byte, error) {
+	return r.RunWithAudit(ctx, scannerPath, target, displayName, "", "")
+}
+
+func (r Runner) RunWithAudit(ctx context.Context, scannerPath string, target *os.File, displayName, auditPath, auditFormat string) ([]byte, error) {
 	if r.Bubblewrap == "" {
 		return nil, errors.New("bubblewrap path is empty")
 	}
@@ -43,24 +52,43 @@ func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName st
 	if !validDisplayName(displayName) {
 		return nil, errors.New("sandbox display name is invalid")
 	}
+	if target == nil {
+		return nil, errors.New("pinned target descriptor is required")
+	}
+	if (auditPath == "") != (auditFormat == "") {
+		return nil, errors.New("audit path and pinned format must be supplied together")
+	}
+	targetInfo, err := target.Stat()
+	if err != nil || !targetInfo.IsDir() {
+		return nil, errors.New("pinned target descriptor is not a directory")
+	}
 	scanner, err := openPinned(scannerPath, false)
 	if err != nil {
 		return nil, fmt.Errorf("pin scanner: %w", err)
 	}
 	defer scanner.Close()
+	var audit *os.File
+	if auditPath != "" {
+		audit, err = openPinned(auditPath, false)
+		if err != nil {
+			return nil, fmt.Errorf("pin Omarchy audit: %w", err)
+		}
+		defer audit.Close()
+	}
 	if err := requireStaticELF(scanner); err != nil {
 		return nil, fmt.Errorf("validate scanner executable: %w", err)
 	}
-	target, err := openPinned(targetPath, true)
-	if err != nil {
-		return nil, fmt.Errorf("pin target: %w", err)
-	}
-	defer target.Close()
-
 	timed, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(timed, r.Bubblewrap, Arguments("/proc/self/fd/3", "/proc/self/fd/4", displayName)...)
+	arguments := Arguments("/proc/self/fd/3", "/proc/self/fd/4", displayName)
+	if audit != nil {
+		arguments = ArgumentsWithAudit("/proc/self/fd/3", "/proc/self/fd/4", displayName, "/proc/self/fd/5", auditFormat)
+	}
+	cmd := exec.CommandContext(timed, r.Bubblewrap, arguments...)
 	cmd.ExtraFiles = []*os.File{scanner, target}
+	if audit != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, audit)
+	}
 	cmd.Env = []string{}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -89,17 +117,24 @@ func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName st
 		}
 		return readResult{data: buf.Bytes()}
 	}
-	outCh := make(chan readResult, 1)
-	errCh := make(chan readResult, 1)
-	go func() { outCh <- readBounded(stdout, MaxReportBytes) }()
-	go func() { errCh <- readBounded(stderr, MaxStderrBytes) }()
-	out := <-outCh
-	if out.err != nil {
-		cancel()
+	type streamResult struct {
+		stdout bool
+		readResult
 	}
-	diagnostics := <-errCh
-	if diagnostics.err != nil {
-		cancel()
+	results := make(chan streamResult, 2)
+	go func() { results <- streamResult{stdout: true, readResult: readBounded(stdout, MaxReportBytes)} }()
+	go func() { results <- streamResult{stdout: false, readResult: readBounded(stderr, MaxStderrBytes)} }()
+	var out, diagnostics readResult
+	for range 2 {
+		result := <-results
+		if result.stdout {
+			out = result.readResult
+		} else {
+			diagnostics = result.readResult
+		}
+		if result.err != nil {
+			cancel()
+		}
 	}
 	waitErr := cmd.Wait()
 	if out.err != nil {
@@ -112,7 +147,7 @@ func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName st
 		return nil, fmt.Errorf("sandbox timed out after %s", r.Timeout)
 	}
 	if waitErr != nil {
-		return nil, fmt.Errorf("sandboxed scanner failed: %w: %s", waitErr, safeDiagnostic(diagnostics.data))
+		return nil, fmt.Errorf("sandboxed scanner failed: %w: %s", waitErr, safetext.Diagnostic(diagnostics.data, MaxStderrBytes))
 	}
 	return out.data, nil
 }
@@ -160,8 +195,24 @@ func Arguments(scannerSource, targetSource, displayName string) []string {
 		"--dir", "/tmp",
 		"--chdir", "/target",
 		"--",
-		"/app/plug-prejudice", "--target", "/target", "--display-name", displayName, "--sandboxed",
+		"/app/plug-prejudice", "--target", "/target", "--display-name", displayName, "--sandboxed", "--resource-limited",
 	}
+}
+
+func ArgumentsWithAudit(scannerSource, targetSource, displayName, auditSource, auditFormat string) []string {
+	arguments := Arguments(scannerSource, targetSource, displayName)
+	separator := 0
+	for index, argument := range arguments {
+		if argument == "--" {
+			separator = index
+			break
+		}
+	}
+	prefix := append([]string(nil), arguments[:separator]...)
+	prefix = append(prefix, "--dir", "/audit", "--ro-bind", auditSource, "/audit/omarchy.json")
+	command := append([]string(nil), arguments[separator:]...)
+	command = append(command, "--omarchy-audit", "/audit/omarchy.json", "--omarchy-audit-format", auditFormat)
+	return append(prefix, command...)
 }
 
 func validDisplayName(value string) bool {
@@ -211,15 +262,4 @@ func openPinned(name string, wantDirectory bool) (*os.File, error) {
 		return nil, errors.New("path identity changed while being opened")
 	}
 	return f, nil
-}
-
-func safeDiagnostic(data []byte) string {
-	const replacement = '?'
-	runes := []rune(string(data))
-	for i, value := range runes {
-		if value < 0x20 && value != '\n' && value != '\t' {
-			runes[i] = replacement
-		}
-	}
-	return string(runes)
 }

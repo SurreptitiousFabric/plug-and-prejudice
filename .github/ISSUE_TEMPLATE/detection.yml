@@ -1,0 +1,52 @@
+name: Detection-rule proposal
+description: Propose a deterministic, evidence-backed analysis improvement.
+title: "analysis: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with `docs/detection-rules.md`. Proposals must distinguish observable facts, supported inference, and unknown behavior; keyword-only warnings are not accepted.
+  - type: textarea
+    id: observable
+    attributes:
+      label: Parsed observable
+      description: What syntax or structured operation can establish the behavior without executing target code?
+    validations:
+      required: true
+  - type: textarea
+    id: consequence
+    attributes:
+      label: Context and potential consequence
+      description: Explain when the behavior matters, the proposed claim type, and why severity reflects impact rather than a command name.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence model
+      description: Describe the file/line/operation evidence and relationships a user should be able to inspect.
+    validations:
+      required: true
+  - type: textarea
+    id: benign
+    attributes:
+      label: Benign and ambiguous cases
+      description: Give legitimate examples, lookalikes, dynamic forms, and malformed inputs that must not become confident findings.
+    validations:
+      required: true
+  - type: textarea
+    id: limitations
+    attributes:
+      label: Unknowns and analysis limits
+      description: State what cannot be safely resolved and when the report should become incomplete.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Trust-boundary check
+      options:
+        - label: The proposal does not require sourcing, importing, evaluating, or executing target-plugin code.
+          required: true
+        - label: I have not included secrets, private plugin source, personal configuration, or live malware.
+          required: true

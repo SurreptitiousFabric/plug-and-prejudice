@@ -35,6 +35,9 @@ LLM dependency.
 - Uses documented Omarchy plugin discovery and native visual conventions.
 - Obtains a bounded list of valid installed directory IDs from the trusted
   broker without reading plugin-authored manifests merely to populate the UI.
+  The broker reads fixed-size directory batches and fails visibly above 1,024
+  valid plugins or 4,096 total root entries rather than allocating an
+  attacker-sized directory listing or silently truncating it.
 - Passes a plugin identity to the broker without invoking a shell interpreter.
 - Consumes a versioned structured report rather than scraping terminal output.
 - Treats every report string as hostile plain text.
@@ -42,9 +45,18 @@ LLM dependency.
 ### Broker
 
 - Resolves an installed plugin identity to an approved canonical directory.
-- Records Git revision and working-tree state without running repository hooks.
+- Optionally pins one explicitly selected Omarchy audit JSON file and exposes
+  only that descriptor read-only to the scanner; it never runs the audit.
+- Opens and pins the selected directory before constructing containment; the
+  scanner binds its report to the resulting bounded file inventory and root
+  digest. Git metadata is hostile target data, not trusted provenance.
+- Rejects a structurally valid scanner report unless its target identity
+  exactly matches the selected plugin ID, its root digest is present, and its
+  resource metadata exactly matches the compiled broker policy.
 - Constructs a fixed Bubblewrap command from trusted constants.
 - Creates a controlled output area and applies resource/time limits.
+- Re-enters a randomized, verified systemd user scope before resolving the
+  target, then applies process rlimits and constructs Bubblewrap containment.
 - Fails closed if required isolation cannot be established.
 
 ### Deterministic scanner
