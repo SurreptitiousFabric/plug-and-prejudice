@@ -222,7 +222,31 @@ func trustedProbe(t *testing.T) (string, string) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build trusted sandbox probe: %v: %s", err, output)
 	}
+	requireBubblewrapNetworkNamespace(t, bwrap, probe)
 	return bwrap, probe
+}
+
+func requireBubblewrapNetworkNamespace(t *testing.T, bwrap, probe string) {
+	t.Helper()
+	check := exec.Command(
+		bwrap,
+		"--die-with-parent",
+		"--unshare-user",
+		"--unshare-net",
+		"--dir", "/app",
+		"--ro-bind", probe, "/app/probe",
+		"--",
+		"/app/probe",
+	)
+	output, err := check.CombinedOutput()
+	if err == nil {
+		return
+	}
+	message := string(output)
+	if strings.Contains(message, "loopback: Failed RTM_NEWADDR: Operation not permitted") {
+		t.Skipf("host kernel cannot configure Bubblewrap's isolated loopback interface: %s", strings.TrimSpace(message))
+	}
+	t.Fatalf("Bubblewrap network-namespace preflight failed: %v: %s", err, strings.TrimSpace(message))
 }
 
 func probeTarget(t *testing.T) *os.File {
