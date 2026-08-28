@@ -90,7 +90,7 @@ func manifestFinding(result *Result, severity report.Severity, suffix, title, ex
 	result.Findings = append(result.Findings, report.Finding{
 		ID: "finding-" + suffix, Claim: report.ClaimFact, Severity: severity,
 		Confidence: report.ConfidenceHigh, Category: "manifest", Title: title, Explanation: explanation,
-		Evidence: []report.Evidence{{Path: "manifest.json"}}, Provenance: "deterministic:manifest",
+		Evidence: []report.Evidence{{Path: "manifest.json"}}, Provenance: sourceProvenance("manifest/v1"),
 	})
 }
 

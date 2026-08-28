@@ -102,7 +102,7 @@ func classifyQMLShell(op report.Operation, result *Result) {
 	result.Findings = append(result.Findings, report.Finding{
 		ID: "finding-qml-shell-" + op.ID, Claim: report.ClaimFact, Severity: severity,
 		Confidence: op.Confidence, Category: category, Title: title, Explanation: explanation,
-		Evidence: []report.Evidence{op.Evidence}, Related: []string{op.ID}, Provenance: "deterministic:qml-lexical+shell-ast",
+		Evidence: []report.Evidence{op.Evidence}, Related: []string{op.ID}, Provenance: sourceProvenance("qml-lexical-shell-ast/v1"),
 	})
 }
 

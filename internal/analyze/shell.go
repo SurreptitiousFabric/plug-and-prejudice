@@ -115,7 +115,7 @@ func analyzeShell(name string, data []byte, result *Result) {
 			Category: "download-and-execute", Title: "Downloads content and sends it directly to an interpreter",
 			Explanation: "Network-provided content is passed to a command interpreter without an inspectable file or integrity check between retrieval and execution. The remote response can therefore become code running with the plugin user's authority.",
 			Evidence:    []report.Evidence{{Path: name, LineStart: line, LineEnd: int(binary.End().Line()), Operation: printNode(binary), Excerpt: sourceLine(data, line)}},
-			Related:     []string{left.ID, right.ID}, Provenance: "deterministic:shell-ast",
+			Related:     []string{left.ID, right.ID}, Provenance: sourceProvenance("shell-ast/v1"),
 		})
 		return true
 	})
@@ -130,7 +130,7 @@ func classifyCall(op report.Operation, result *Result) {
 			Severity: report.SeverityHigh, Confidence: op.Confidence, Category: "privilege-escalation",
 			Title:       "Invokes a privilege-elevation command",
 			Explanation: "This operation requests execution with another user's authority. Whether elevation succeeds and what authorization is required cannot be established by static analysis alone.",
-			Evidence:    []report.Evidence{op.Evidence}, Related: []string{op.ID}, Provenance: "deterministic:shell-ast",
+			Evidence:    []report.Evidence{op.Evidence}, Related: []string{op.ID}, Provenance: sourceProvenance("shell-ast/v1"),
 		})
 	case "eval":
 		result.Findings = append(result.Findings, report.Finding{
@@ -138,7 +138,7 @@ func classifyCall(op report.Operation, result *Result) {
 			Severity: report.SeverityMedium, Confidence: op.Confidence, Category: "dynamic-execution",
 			Title:       "Evaluates text as shell code",
 			Explanation: "The shell reparses text as commands at runtime. Static analysis may not be able to determine the resulting operations, especially when the evaluated value is dynamic.",
-			Evidence:    []report.Evidence{op.Evidence}, Related: []string{op.ID}, Provenance: "deterministic:shell-ast",
+			Evidence:    []report.Evidence{op.Evidence}, Related: []string{op.ID}, Provenance: sourceProvenance("shell-ast/v1"),
 		})
 	}
 }

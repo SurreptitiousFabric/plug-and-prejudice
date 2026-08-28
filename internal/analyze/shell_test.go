@@ -30,7 +30,7 @@ func TestShellDetectsParsedDownloadAndExecutePipeline(t *testing.T) {
 		t.Fatalf("operations = %d, want 2", len(result.Operations))
 	}
 	finding := findingByCategory(t, result, "download-and-execute")
-	if finding.Severity != report.SeverityHigh || finding.Claim != report.ClaimFact || finding.Provenance != "deterministic:shell-ast" {
+	if finding.Severity != report.SeverityHigh || finding.Claim != report.ClaimFact || finding.Provenance.RuleID != "shell-ast/v1" {
 		t.Fatalf("unexpected finding: %#v", finding)
 	}
 	if finding.Evidence[0].LineStart != 2 || len(finding.Related) != 2 {
