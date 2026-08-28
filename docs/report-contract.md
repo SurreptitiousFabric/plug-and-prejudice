@@ -9,8 +9,8 @@ unsafe evidence paths, broken operation references, or contradictory
 
 ## Top-level sections
 
-- `scan`: scanner/policy versions, UTC timestamps, and whether the trusted
-  broker established containment.
+- `scan`: scanner/policy versions, UTC timestamps, whether the trusted broker
+  established containment, and exact memory/swap/task/CPU/wall-time limits.
 - `target`: display identity, bounded inventory totals, content digest, and any
   deterministically parsed Omarchy manifest.
 - `inventory`: files and deliberately skipped inputs, including inspected ELF

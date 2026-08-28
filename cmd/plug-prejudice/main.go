@@ -10,12 +10,13 @@ import (
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/analyze"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/inventory"
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
 )
 
 const (
 	version       = "0.0.0-dev"
-	policyVersion = "inventory-v1"
+	policyVersion = "deterministic-v1"
 )
 
 func main() {
@@ -28,11 +29,16 @@ func run() int {
 	target := flags.String("target", "", "plugin directory to inspect as hostile input")
 	displayName := flags.String("display-name", "", "trusted display label supplied by the containment broker")
 	sandboxed := flags.Bool("sandboxed", false, "record that a trusted broker established containment")
+	resourceLimited := flags.Bool("resource-limited", false, "record that the trusted broker established resource containment")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return 2
 	}
 	if *target == "" || flags.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "usage: plug-prejudice --target DIRECTORY [--sandboxed]")
+		return 2
+	}
+	if *sandboxed != *resourceLimited {
+		fmt.Fprintln(os.Stderr, "sandbox and resource containment must be established together")
 		return 2
 	}
 
@@ -58,6 +64,7 @@ func run() int {
 			StartedAt:      started,
 			CompletedAt:    time.Now().UTC(),
 			Sandboxed:      *sandboxed,
+			ResourceLimits: scanResourceLimits(*resourceLimited),
 		},
 		Target: report.Target{
 			DisplayName: targetDisplayName(*target, *displayName),
@@ -82,6 +89,17 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+func scanResourceLimits(established bool) *report.ResourceLimits {
+	if !established {
+		return nil
+	}
+	return &report.ResourceLimits{
+		MemoryMaxBytes: policy.MemoryMaxBytes, MemorySwapBytes: policy.MemorySwapBytes,
+		TasksMax: policy.TasksMax, CPUQuotaPercent: policy.CPUQuotaPercent,
+		WallTimeSeconds: int(policy.WallTime.Seconds()),
+	}
 }
 
 func targetDisplayName(target, supplied string) string {

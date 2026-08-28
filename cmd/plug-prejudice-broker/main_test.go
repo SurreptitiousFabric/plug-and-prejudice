@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
 )
 
 func TestInstalledPluginIDsListsOnlyRealValidDirectories(t *testing.T) {
@@ -31,6 +34,21 @@ func TestInstalledPluginIDsListsOnlyRealValidDirectories(t *testing.T) {
 	want := []string{"org.example.alpha", "zeta"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("installedPluginIDs() = %q, want %q", got, want)
+	}
+}
+
+func TestExpectedResourceLimitsRequiresExactPolicy(t *testing.T) {
+	limits := &report.ResourceLimits{
+		MemoryMaxBytes: policy.MemoryMaxBytes, MemorySwapBytes: policy.MemorySwapBytes,
+		TasksMax: policy.TasksMax, CPUQuotaPercent: policy.CPUQuotaPercent,
+		WallTimeSeconds: int(policy.WallTime.Seconds()),
+	}
+	if !expectedResourceLimits(limits) {
+		t.Fatal("exact resource policy was rejected")
+	}
+	limits.TasksMax++
+	if expectedResourceLimits(limits) {
+		t.Fatal("mismatched resource policy was accepted")
 	}
 }
 

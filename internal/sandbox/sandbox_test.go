@@ -21,6 +21,7 @@ func TestArgumentsKeepNetworkAndHostFilesystemUnshared(t *testing.T) {
 		"--ro-bind /proc/self/fd/3 /app/plug-prejudice",
 		"--ro-bind /proc/self/fd/4 /target",
 		"--display-name org.example.plugin",
+		"--sandboxed --resource-limited",
 	} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("sandbox arguments omit %q: %s", required, joined)
@@ -73,20 +74,7 @@ func TestRequireStaticELFRejectsNonELF(t *testing.T) {
 }
 
 func TestBubblewrapIsolation(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Bubblewrap integration requires Linux")
-	}
-	bwrap, err := exec.LookPath("bwrap")
-	if err != nil {
-		t.Skip("Bubblewrap is unavailable")
-	}
-	probe := filepath.Join(t.TempDir(), "probe")
-	build := exec.Command("go", "build", "-o", probe, "./testdata/probe")
-	build.Dir = "."
-	build.Env = append(os.Environ(), "CGO_ENABLED=0")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build trusted sandbox probe: %v: %s", err, output)
-	}
+	bwrap, probe := trustedProbe(t)
 	probeFile, err := os.Open(probe)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +99,7 @@ func TestBubblewrapIsolation(t *testing.T) {
 	if err := json.Unmarshal(output, &result); err != nil {
 		t.Fatalf("decode probe output: %v: %q", err, output)
 	}
-	for _, denied := range []string{"readHostEtc", "readHostHome", "writeTarget", "network", "seeHostProc"} {
+	for _, denied := range []string{"readHostEtc", "readHostHome", "writeTarget", "network", "seeHostProc", "seeSessionSocket", "nestedUserNamespace"} {
 		if result[denied] {
 			t.Errorf("sandbox unexpectedly permitted %s", denied)
 		}
@@ -119,4 +107,52 @@ func TestBubblewrapIsolation(t *testing.T) {
 	if !result["readTarget"] || !result["writeTmp"] || !result["environmentMinimal"] {
 		t.Errorf("sandbox did not provide its intended minimum access: %#v", result)
 	}
+}
+
+func TestBubblewrapWallClockTimeout(t *testing.T) {
+	bwrap, probe := trustedProbe(t)
+	target := probeTarget(t)
+	runner := Runner{Bubblewrap: bwrap, Timeout: 100 * time.Millisecond}
+	_, err := runner.Run(context.Background(), probe, target, "timeout")
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("timeout result = %v", err)
+	}
+}
+
+func TestBubblewrapRejectsOversizedOutput(t *testing.T) {
+	bwrap, probe := trustedProbe(t)
+	target := probeTarget(t)
+	runner := Runner{Bubblewrap: bwrap, Timeout: 5 * time.Second}
+	_, err := runner.Run(context.Background(), probe, target, "output")
+	if err == nil || !strings.Contains(err.Error(), "output exceeded") {
+		t.Fatalf("oversized output result = %v", err)
+	}
+}
+
+func trustedProbe(t *testing.T) (string, string) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("Bubblewrap integration requires Linux")
+	}
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		t.Skip("Bubblewrap is unavailable")
+	}
+	probe := filepath.Join(t.TempDir(), "probe")
+	build := exec.Command("go", "build", "-o", probe, "./testdata/probe")
+	build.Dir = "."
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build trusted sandbox probe: %v: %s", err, output)
+	}
+	return bwrap, probe
+}
+
+func probeTarget(t *testing.T) string {
+	t.Helper()
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "manifest.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return target
 }

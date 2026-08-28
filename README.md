@@ -11,7 +11,7 @@ that a plugin is safe.
 
 The project is under active development. The bounded scanner, fail-closed
 Bubblewrap broker, and tested Omarchy panel prototype exist, but analysis
-coverage, resource accounting, release packaging, and release-stable report
+coverage, release packaging, and release-stable report
 schema are not complete. Do not treat this as a release.
 
 The approved first release will:

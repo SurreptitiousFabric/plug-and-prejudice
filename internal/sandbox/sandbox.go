@@ -12,12 +12,16 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/trustedexec"
 )
+
+const bubblewrapPath = "/usr/bin/bwrap"
 
 const (
 	MaxReportBytes = 16 << 20
 	MaxStderrBytes = 64 << 10
-	DefaultTimeout = 30 * time.Second
 )
 
 type Runner struct {
@@ -26,11 +30,11 @@ type Runner struct {
 }
 
 func DefaultRunner() (Runner, error) {
-	bwrap, err := exec.LookPath("bwrap")
+	bwrap, err := trustedexec.Require(bubblewrapPath)
 	if err != nil {
-		return Runner{}, errors.New("bubblewrap is required; refusing to scan without containment")
+		return Runner{}, fmt.Errorf("trusted bubblewrap is required; refusing to scan without containment: %w", err)
 	}
-	return Runner{Bubblewrap: bwrap, Timeout: DefaultTimeout}, nil
+	return Runner{Bubblewrap: bwrap, Timeout: policy.WallTime}, nil
 }
 
 func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName string) ([]byte, error) {
@@ -160,7 +164,7 @@ func Arguments(scannerSource, targetSource, displayName string) []string {
 		"--dir", "/tmp",
 		"--chdir", "/target",
 		"--",
-		"/app/plug-prejudice", "--target", "/target", "--display-name", displayName, "--sandboxed",
+		"/app/plug-prejudice", "--target", "/target", "--display-name", displayName, "--sandboxed", "--resource-limited",
 	}
 }
 

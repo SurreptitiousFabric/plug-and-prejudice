@@ -1,6 +1,6 @@
 # Deterministic scanner sandbox policy
 
-Status: implemented foundation; not yet release-approved.
+Status: implemented foundation; resource-scope changes pending human review.
 
 ## Boundary
 
@@ -8,6 +8,13 @@ The trusted broker resolves an installed plugin ID, opens the scanner and target
 as stable file descriptors, verifies their identity and type, and gives those
 descriptors to Bubblewrap. Target-controlled text never enters a Bubblewrap
 option. Endpoint symlinks are rejected.
+
+Before target resolution, the broker re-enters its pinned running inode in a
+randomized transient systemd user scope. It verifies its own cgroup-v2 files and
+fails closed unless they prove limits of 256 MiB memory, zero swap, 64 tasks,
+and 100% aggregate CPU or stricter. It also disables core dumps and restricts
+open file descriptors to at most 256. See
+[decision 0003](decisions/0003-systemd-resource-scope.md).
 
 The broker also verifies that the pinned scanner is an executable ELF with no
 program interpreter or imported shared libraries. Release builds therefore use
@@ -28,6 +35,9 @@ writable output directory.
 The broker requires Bubblewrap and fails closed if it is unavailable. The
 current arguments establish:
 
+- fixed root-owned, non-symlink executables at `/usr/bin/systemd-run` and
+  `/usr/bin/bwrap`; inherited `PATH` is never used to choose a boundary tool;
+
 - new user, mount, PID, IPC, network, UTS, and cgroup namespaces through
   `--unshare-all`;
 - an explicit user namespace before disabling further user namespaces;
@@ -46,12 +56,13 @@ PWD=/target
 TMPDIR=/tmp
 ```
 
-The broker imposes a 30-second wall-clock timeout, a 16 MiB report limit, and a
+The systemd scope has a 35-second lifetime and Bubblewrap retains an independent
+30-second wall-clock timeout. The broker imposes a 16 MiB report limit and a
 64 KiB diagnostic limit. Scanner-level limits currently include 10,000 entries,
 32 directory levels, 2 MiB per source file, 32 MiB total retained source, 64 MiB
 per ELF file, and 128 MiB total ELF input. Source and binary budgets are
-independent. Additional systemd memory, CPU, and process accounting remains a
-release requirement and is not claimed by the current implementation.
+independent. Enforced limits are included in scan metadata and must match the
+broker's compiled policy.
 
 ## Tested guarantees
 
@@ -66,9 +77,11 @@ writes work, and negatively tests:
 - visibility of host process information; and
 - leakage of non-policy environment variables.
 
-The test is run both normally and with Go's race detector. Tests of wall-clock
-termination, output exhaustion, nested namespaces, session sockets, memory/CPU
-limits, and systemd composition are still required before release.
+The test is run both normally and with Go's race detector. Additional tests
+verify the live systemd scope from inside its cgroup, reject missing, unlimited,
+or weaker cgroup controls, trigger real memory and task exhaustion, terminate a
+scanner that exceeds wall time, reject scanner output beyond its bound, deny a
+nested user namespace, and prove host session sockets are absent.
 
 ## Non-claims
 

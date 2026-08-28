@@ -12,9 +12,10 @@ func validReport() Report {
 	return Report{
 		SchemaVersion: SchemaVersion,
 		Status:        StatusComplete,
-		Scan:          ScanMetadata{ScannerVersion: "test", PolicyVersion: "test", StartedAt: now, CompletedAt: now, Sandboxed: true},
-		Target:        Target{DisplayName: "example", FileCount: 1},
-		Inventory:     []File{}, Operations: []Operation{}, Resources: []Resource{}, Findings: []Finding{}, Limitations: []Limitation{}, Errors: []ScanError{},
+		Scan: ScanMetadata{ScannerVersion: "test", PolicyVersion: "test", StartedAt: now, CompletedAt: now, Sandboxed: true,
+			ResourceLimits: &ResourceLimits{MemoryMaxBytes: 256 << 20, TasksMax: 64, CPUQuotaPercent: 100, WallTimeSeconds: 30}},
+		Target:    Target{DisplayName: "example", FileCount: 1},
+		Inventory: []File{}, Operations: []Operation{}, Resources: []Resource{}, Findings: []Finding{}, Limitations: []Limitation{}, Errors: []ScanError{},
 	}
 }
 
@@ -62,5 +63,18 @@ func TestCompleteReportCannotHideLimitations(t *testing.T) {
 	r.Limitations = []Limitation{{Code: "unknown", Description: "Not inspected"}}
 	if err := r.Validate(); err == nil {
 		t.Fatal("complete report with limitation was accepted")
+	}
+}
+
+func TestSandboxMetadataRequiresResourceLimits(t *testing.T) {
+	r := validReport()
+	r.Scan.ResourceLimits = nil
+	if err := r.Validate(); err == nil {
+		t.Fatal("sandboxed report without resource limits was accepted")
+	}
+	r.Scan.Sandboxed = false
+	r.Scan.ResourceLimits = &ResourceLimits{MemoryMaxBytes: 1, TasksMax: 1, CPUQuotaPercent: 1, WallTimeSeconds: 1}
+	if err := r.Validate(); err == nil {
+		t.Fatal("unsandboxed report claiming resource limits was accepted")
 	}
 }

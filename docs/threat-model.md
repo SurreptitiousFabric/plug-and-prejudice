@@ -51,6 +51,12 @@ paths, fixed arguments, cleared environment, safe file descriptors, and strict
 plugin-ID resolution. Target content must never influence Bubblewrap options or
 host paths.
 
+The broker enters a verified transient systemd user scope before target
+resolution. The scope bounds memory, swap, tasks, aggregate CPU, and lifetime;
+process rlimits disable core dumps and cap open descriptors. The broker fails
+closed if the user manager or cgroup-v2 controls cannot establish and prove the
+policy.
+
 ### Omarchy wrapper
 
 Trusted but hosted in the same unsandboxed `omarchy-shell` process as enabled
@@ -86,7 +92,7 @@ payload before disclosure.
 | Host modification | Dedicated output and temporary areas; read-only runtime; no session sockets |
 | Network access | Private network namespace with no shared host network |
 | Path escape | Canonical broker resolution; mount boundary; no symlink following; bounded traversal |
-| Parser denial of service | File/depth/byte/time/memory/process/output limits |
+| Parser denial of service | File/depth/byte/output limits; verified systemd memory/swap/task/CPU scope; independent wall timeout; core/file-descriptor rlimits |
 | Report injection | Strict JSON schema; plain-text renderer; control-character normalization |
 | False reassurance | Explicit limitations; no safe verdict or opaque score |
 | False positives | Parsed context, correlated behavior, benign fixtures, separate confidence |

@@ -45,6 +45,8 @@ LLM dependency.
 - Records Git revision and working-tree state without running repository hooks.
 - Constructs a fixed Bubblewrap command from trusted constants.
 - Creates a controlled output area and applies resource/time limits.
+- Re-enters a randomized, verified systemd user scope before resolving the
+  target, then applies process rlimits and constructs Bubblewrap containment.
 - Fails closed if required isolation cannot be established.
 
 ### Deterministic scanner

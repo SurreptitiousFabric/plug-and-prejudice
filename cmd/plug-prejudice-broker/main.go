@@ -7,11 +7,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/resource"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/sandbox"
 )
 
@@ -35,10 +38,11 @@ func run() int {
 	list := flags.Bool("list", false, "list installed Omarchy plugin IDs without reading plugin content")
 	pluginsRoot := flags.String("plugins-root", defaultPluginsRoot(), "trusted installed-plugin directory")
 	scanner := flags.String("scanner", siblingScanner(), "trusted scanner executable")
+	resourceScope := flags.String("resource-scope", "", "internal verified systemd scope")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return 2
 	}
-	if flags.NArg() != 0 || (*list == (*pluginID != "")) || (!*list && !validPluginID(*pluginID)) {
+	if flags.NArg() != 0 || (*list == (*pluginID != "")) || (!*list && !validPluginID(*pluginID)) || (*list && *resourceScope != "") {
 		fmt.Fprintln(os.Stderr, "usage: plug-prejudice-broker (--list | --plugin ID)")
 		return 2
 	}
@@ -53,6 +57,42 @@ func run() int {
 			return 1
 		}
 		return 0
+	}
+	manager, err := resource.DefaultManager()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if *resourceScope == "" {
+		unit, err := resource.NewUnitName()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		executable := fmt.Sprintf("/proc/%d/exe", os.Getpid())
+		arguments := []string{
+			"--plugin", *pluginID,
+			"--plugins-root", *pluginsRoot,
+			"--scanner", *scanner,
+			"--resource-scope", unit,
+		}
+		if err := manager.Run(context.Background(), unit, executable, arguments); err != nil {
+			var exited *exec.ExitError
+			if errors.As(err, &exited) {
+				return exited.ExitCode()
+			}
+			fmt.Fprintf(os.Stderr, "enter resource scope: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if err := manager.Verify(*resourceScope); err != nil {
+		fmt.Fprintf(os.Stderr, "verify resource scope: %v\n", err)
+		return 1
+	}
+	if err := resource.ApplyProcessLimits(); err != nil {
+		fmt.Fprintf(os.Stderr, "apply process limits: %v\n", err)
+		return 1
 	}
 	target, err := installedTarget(*pluginsRoot, *pluginID)
 	if err != nil {
@@ -69,8 +109,13 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "review plugin: %v\n", err)
 		return 1
 	}
-	if _, err := report.Decode(output); err != nil {
+	decoded, err := report.Decode(output)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "validate scanner report: %v\n", err)
+		return 1
+	}
+	if !expectedResourceLimits(decoded.Scan.ResourceLimits) {
+		fmt.Fprintln(os.Stderr, "validate scanner report: resource policy metadata does not match broker policy")
 		return 1
 	}
 	if _, err := os.Stdout.Write(output); err != nil {
@@ -78,6 +123,12 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+func expectedResourceLimits(limits *report.ResourceLimits) bool {
+	return limits != nil && limits.MemoryMaxBytes == policy.MemoryMaxBytes && limits.MemorySwapBytes == policy.MemorySwapBytes &&
+		limits.TasksMax == policy.TasksMax && limits.CPUQuotaPercent == policy.CPUQuotaPercent &&
+		limits.WallTimeSeconds == int(policy.WallTime.Seconds())
 }
 
 func installedPluginIDs(root string) ([]string, error) {
