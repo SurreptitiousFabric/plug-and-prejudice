@@ -257,8 +257,7 @@ func TestDisagreementRequiresTypedCoverageDifferenceShape(t *testing.T) {
 	r := graphReport(t)
 	external := appendTestExternalInput(&r, "input-omarchy")
 	r.Operations = append(r.Operations, Operation{ID: "external-command", Category: "omarchy-audit-command", Command: "wget", Scope: ScopeUnknown, Confidence: ConfidenceHigh, Evidence: Evidence{Path: "omarchy-audit.json"}, Provenance: external})
-	coverageProvenance := external
-	coverageProvenance.RuleID = CoverageComparisonRule
+	coverageProvenance := Provenance{RuleID: CoverageComparisonRule, Analyzer: DeterministicAnalyzer, AnalyzerVersion: r.Scan.ScannerVersion, EvidenceSource: EvidenceSourceOmarchyAudit}
 	r.Findings = append(r.Findings, Finding{ID: "coverage-difference", Claim: ClaimFact, Severity: SeverityInformational, Confidence: ConfidenceHigh, Category: CoverageDifferenceCategory, Scope: ScopeUnknown, Title: "Coverage differs", Explanation: "Only one producer retained this semantic subject.", Evidence: []Evidence{{InputID: "input-omarchy", Path: "omarchy-audit.json"}}, Related: []string{}, Provenance: coverageProvenance})
 	if err := r.BuildEvidenceGraph(); err != nil {
 		t.Fatal(err)

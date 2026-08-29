@@ -9,14 +9,15 @@ import (
 	"time"
 )
 
-var testProvenance = Provenance{RuleID: "test/v1", Analyzer: "plug-prejudice/deterministic", AnalyzerVersion: "test", EvidenceSource: EvidenceSourceTargetSource}
+var testProvenance = Provenance{RuleID: "test/v1", Analyzer: DeterministicAnalyzer, AnalyzerVersion: "test", EvidenceSource: EvidenceSourceTargetSource}
 
 func appendTestExternalInput(r *Report, id string) Provenance {
-	provenance := Provenance{RuleID: OmarchyAuditObservationRule, Analyzer: OmarchyAuditAnalyzer, AnalyzerVersion: OmarchyAuditInputVersion, EvidenceSource: EvidenceSourceOmarchyAudit}
+	rawProvenance := Provenance{RuleID: OmarchyAuditObservationRule, Analyzer: OmarchyAuditAnalyzer, AnalyzerVersion: OmarchyAuditInputVersion, EvidenceSource: EvidenceSourceOmarchyAudit}
+	bindingProvenance := Provenance{RuleID: ExternalBindingAssessmentRule, Analyzer: DeterministicAnalyzer, AnalyzerVersion: r.Scan.ScannerVersion, EvidenceSource: EvidenceSourceOmarchyAudit}
 	r.EvidenceInputs = append(r.EvidenceInputs, NewOmarchyAuditEvidenceInput(id, "pinned test Omarchy audit", []byte(`{"commands":["curl"]}`)))
 	r.Status = StatusIncomplete
-	r.Unknowns = append(r.Unknowns, Unknown{ID: "unknown-binding-" + id, Category: ExternalEvidenceBindingCategory, Reason: UnknownExternalBinding, Scope: ScopeUnknown, Confidence: ConfidenceHigh, Title: "External input is not digest bound", Description: "Test input has no independently checked digest.", Evidence: []Evidence{{InputID: id, Path: "omarchy-audit.json"}}, Origins: []ValueOrigin{}, AffectedOperations: []string{}, SuppressedRules: []string{ExternalSnapshotBindingRule}, Provenance: provenance})
-	return provenance
+	r.Unknowns = append(r.Unknowns, Unknown{ID: "unknown-binding-" + id, Category: ExternalEvidenceBindingCategory, Reason: UnknownExternalBinding, Scope: ScopeUnknown, Confidence: ConfidenceHigh, Title: "External input is not digest bound", Description: "Test input has no independently checked digest.", Evidence: []Evidence{{InputID: id, Path: "omarchy-audit.json"}}, Origins: []ValueOrigin{}, AffectedOperations: []string{}, SuppressedRules: []string{ExternalSnapshotBindingRule}, Provenance: bindingProvenance})
+	return rawProvenance
 }
 
 func buildTestEvidence(t *testing.T, r *Report) {

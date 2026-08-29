@@ -29,9 +29,18 @@ separate declared pinned audit input and cannot impersonate the target. The
 target input has fixed ID `input-target`, type `target-inventory`, format
 `plug-prejudice-inventory`, and version `2.0.0`; exactly one is permitted.
 Omarchy inputs use the pinned `omarchy-plugin-audit` / `pr8439-732b104`
-contract. Local evidence must name the trusted deterministic analyzer and exact
-scanner version; Omarchy evidence must name `omarchy/plugin-audit` and the
-input's exact version. Provenance identifies an asserted producer, not truth. Inventory paths are unique canonical POSIX
+contract. `analyzer` and `analyzerVersion` identify the software that asserted
+the record; `evidenceSource` identifies the class of evidence it used, and an
+evidence record's `inputId` identifies the concrete declared input. Raw imported
+Omarchy observations name `omarchy/plugin-audit` and the input's exact version.
+Plug & Prejudice conclusions drawn from Omarchy evidence instead name the
+trusted deterministic analyzer and exact scanner version while retaining
+`omarchy-audit` and the Omarchy input ID. Only explicitly allow-listed local
+binding, coverage-comparison, and comparison-budget rules may make those
+external-evidence conclusions. Target-source and inventory-metadata records
+must use the trusted deterministic analyzer and exact scanner version.
+Provenance is structural attribution, not cryptographic authentication or proof
+of truth. Inventory paths are unique canonical POSIX
 target-relative labels. `target.fileCount` equals
 the inventory length. Every finding has at least one valid evidence location;
 every resource has valid evidence and names an existing originating operation.
@@ -120,21 +129,30 @@ scan into a reproducible or atomic filesystem snapshot.
   and bounded main reasons. The dimensions and denominator are defined in ADR
   0018 and never form a safety score.
 
-Optional Omarchy audit nodes retain `omarchy-audit` provenance. `corroborates`
+Optional Omarchy audit nodes retain `omarchy-audit` as their evidence source.
+Raw imported observations attribute their assertion to Omarchy; local binding,
+coverage-difference, and comparison-budget conclusions attribute their
+assertion to Plug & Prejudice even when they cite that same external input.
+`corroborates`
 is restricted to operation/operation or resource/resource observations with
 the same validated semantic subject, one local producer and one distinct
 external producer. `duplicates` requires the same kind, semantic payload, and
 source/analyzer boundary. `disagrees-with` is restricted to an operation or
 resource observation and a fact, informational, high-confidence, unknown-scope
-Omarchy coverage-difference finding. Its single evidence record and
-analyzer/version/source provenance must equal the retained source observation
-(apart from the exact comparison rule ID), and its `coverage` basis subject
+Omarchy coverage-difference finding. Its single evidence record and evidence
+source must equal the retained source observation, while its analyzer/version
+must identify the local deterministic scanner and its rule must be the exact
+coverage-comparison rule. Its `coverage` basis subject
 must equal the reconstructed source subject. Exact matches
 may be connected with `corroborates`; retained-set differences use
 `disagrees-with` plus an informational coverage finding. Neither edge asserts
 correctness or safety: a disagreement means only that one source retained the
 observation while the compared source retained no matching observation. The
-current pinned Omarchy PR #8439 format does not supply a target snapshot root.
+relationships themselves are validator-derived structural graph edges and do
+not carry provenance in schema 2.0.0. Whether a later schema should attribute
+comparison-edge construction separately remains a design question.
+The current pinned Omarchy PR #8439 format does not supply a target snapshot
+root.
 Its trusted importer calculates `documentSha256` from the exact pinned audit
 bytes, but the exact source-bound `external-input-unbound` unknown remains
 mandatory regardless of that document digest. Consequently a current-format

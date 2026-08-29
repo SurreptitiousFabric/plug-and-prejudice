@@ -301,8 +301,7 @@ func coverageComparisonReport(t *testing.T, externalOnly bool) Report {
 		r.Operations = append(r.Operations, Operation{ID: "external-wget", Category: "omarchy-audit-command", Command: "wget", Arguments: []string{}, Scope: ScopeUnknown, Confidence: ConfidenceHigh, Evidence: externalEvidence, Provenance: external})
 		sourceID, sourceEvidence, sourceProvenance = "external-wget", externalEvidence, external
 	}
-	findingProvenance := sourceProvenance
-	findingProvenance.RuleID = CoverageComparisonRule
+	findingProvenance := Provenance{RuleID: CoverageComparisonRule, Analyzer: DeterministicAnalyzer, AnalyzerVersion: r.Scan.ScannerVersion, EvidenceSource: sourceProvenance.EvidenceSource}
 	r.Findings = append(r.Findings, Finding{ID: "coverage-difference", Claim: ClaimFact, Severity: SeverityInformational, Confidence: ConfidenceHigh, Category: CoverageDifferenceCategory, Scope: ScopeUnknown, Title: "Coverage differs", Explanation: "One source retained this observation while the compared source retained no matching observation.", Evidence: []Evidence{sourceEvidence}, Related: []string{}, Provenance: findingProvenance})
 	if err := r.BuildEvidenceGraph(); err != nil {
 		t.Fatal(err)

@@ -11,12 +11,15 @@ const (
 
 	OmarchyAuditInputFormat         = "omarchy-plugin-audit"
 	OmarchyAuditInputVersion        = "pr8439-732b104"
+	DeterministicAnalyzer           = "plug-prejudice/deterministic"
 	OmarchyAuditAnalyzer            = "omarchy/plugin-audit"
 	ExternalEvidenceBindingCategory = "external-evidence-binding"
 	ExternalSnapshotBindingRule     = "external-snapshot-equivalence/v1"
+	ExternalBindingAssessmentRule   = "external-binding-assessment/v1"
 	OmarchyAuditObservationRule     = "omarchy-audit-observation/v1"
 	CoverageDifferenceCategory      = "omarchy-audit-coverage-disagreement"
 	CoverageComparisonRule          = "omarchy-audit-coverage-comparison/v1"
+	ComparisonBudgetRule            = "omarchy-audit-comparison-budget/v1"
 )
 
 // Collection limits bound the validated object graph handed to presentation

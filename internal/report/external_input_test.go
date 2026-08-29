@@ -22,7 +22,7 @@ func appendExternalBindingUnknown(r *Report, inputID string) {
 		Description: "The external document does not identify the retained target snapshot.",
 		Evidence:    []Evidence{{InputID: inputID, Path: "omarchy-audit.json"}}, Origins: []ValueOrigin{},
 		AffectedOperations: []string{}, SuppressedRules: []string{ExternalSnapshotBindingRule},
-		Provenance: Provenance{RuleID: OmarchyAuditObservationRule, Analyzer: OmarchyAuditAnalyzer, AnalyzerVersion: OmarchyAuditInputVersion, EvidenceSource: EvidenceSourceOmarchyAudit},
+		Provenance: Provenance{RuleID: ExternalBindingAssessmentRule, Analyzer: DeterministicAnalyzer, AnalyzerVersion: r.Scan.ScannerVersion, EvidenceSource: EvidenceSourceOmarchyAudit},
 	})
 	if err := r.BuildEvidenceGraph(); err != nil {
 		panic(err)

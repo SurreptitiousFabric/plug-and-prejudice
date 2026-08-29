@@ -238,7 +238,7 @@ func (r Report) validateWithEvidenceInputPolicies(policies []externalEvidenceInp
 		if err := addReference(referenceKinds, referenceProvenance, operation.Reference, NodeOperation, operation.Provenance); err != nil {
 			return fmt.Errorf("operation %q: %w", operation.ID, err)
 		}
-		if err := validateProvenance(operation.Provenance, r.Scan.ScannerVersion); err != nil {
+		if err := validateProvenance(operation.Provenance, r.Scan.ScannerVersion, provenanceOperation); err != nil {
 			return fmt.Errorf("operation %q: %w", operation.ID, err)
 		}
 		if len(operation.Arguments) > MaxOperationArguments {
@@ -263,7 +263,7 @@ func (r Report) validateWithEvidenceInputPolicies(policies []externalEvidenceInp
 		if err := addReference(referenceKinds, referenceProvenance, resource.Reference, NodeResource, resource.Provenance); err != nil {
 			return fmt.Errorf("resource %q: %w", resource.ID, err)
 		}
-		if err := validateProvenance(resource.Provenance, r.Scan.ScannerVersion); err != nil {
+		if err := validateProvenance(resource.Provenance, r.Scan.ScannerVersion, provenanceResource); err != nil {
 			return fmt.Errorf("resource %q: %w", resource.ID, err)
 		}
 		if err := validateScopeConfidence(resource.Scope, resource.Confidence); err != nil {
@@ -291,7 +291,7 @@ func (r Report) validateWithEvidenceInputPolicies(policies []externalEvidenceInp
 		if err := addReference(referenceKinds, referenceProvenance, finding.Reference, NodeFinding, finding.Provenance); err != nil {
 			return fmt.Errorf("finding %q: %w", finding.ID, err)
 		}
-		if err := validateProvenance(finding.Provenance, r.Scan.ScannerVersion); err != nil {
+		if err := validateProvenance(finding.Provenance, r.Scan.ScannerVersion, provenanceFinding); err != nil {
 			return fmt.Errorf("finding %q: %w", finding.ID, err)
 		}
 		if len(finding.Evidence) == 0 {
@@ -340,7 +340,7 @@ func (r Report) validateWithEvidenceInputPolicies(policies []externalEvidenceInp
 		if err := addReference(referenceKinds, referenceProvenance, unknown.Reference, NodeUnknown, unknown.Provenance); err != nil {
 			return fmt.Errorf("unknown %q: %w", unknown.ID, err)
 		}
-		if err := validateProvenance(unknown.Provenance, r.Scan.ScannerVersion); err != nil {
+		if err := validateProvenance(unknown.Provenance, r.Scan.ScannerVersion, provenanceUnknown); err != nil {
 			return fmt.Errorf("unknown %q: %w", unknown.ID, err)
 		}
 		if !oneOf(string(unknown.Reason), string(UnknownDynamicValue), string(UnknownUnsupportedSyntax), string(UnknownParserFailure), string(UnknownBudgetExhaustion), string(UnknownUnreachableSource), string(UnknownNativeBehavior), string(UnknownUnresolvedFlow), string(UnknownExternalBinding)) {
@@ -380,6 +380,18 @@ func (r Report) validateWithEvidenceInputPolicies(policies []externalEvidenceInp
 				return fmt.Errorf("external evidence input %q has duplicate binding unknowns", bindingInput)
 			}
 			externalBindingUnknowns[bindingInput] = true
+		}
+		if unknown.Provenance.EvidenceSource == EvidenceSourceOmarchyAudit && unknown.Provenance.Analyzer == DeterministicAnalyzer {
+			switch unknown.Provenance.RuleID {
+			case ExternalBindingAssessmentRule:
+				if !binding {
+					return fmt.Errorf("unknown %q uses the binding-assessment rule without the required binding shape", unknown.ID)
+				}
+			case ComparisonBudgetRule:
+				if unknown.Reason != UnknownBudgetExhaustion {
+					return fmt.Errorf("unknown %q uses the comparison-budget rule without budget exhaustion", unknown.ID)
+				}
+			}
 		}
 		for _, origin := range unknown.Origins {
 			if !oneOf(string(origin.Kind), string(OriginAssignment), string(OriginParameterExpansion), string(OriginPropertyAssignment), string(OriginUseSite)) {
@@ -640,7 +652,16 @@ func addReference(kinds map[string]NodeKind, provenance map[string]Provenance, r
 	return nil
 }
 
-func validateProvenance(value Provenance, scannerVersion string) error {
+type provenanceRecordKind uint8
+
+const (
+	provenanceOperation provenanceRecordKind = iota
+	provenanceResource
+	provenanceFinding
+	provenanceUnknown
+)
+
+func validateProvenance(value Provenance, scannerVersion string, recordKind provenanceRecordKind) error {
 	if value.RuleID == "" || value.Analyzer == "" || value.AnalyzerVersion == "" {
 		return errors.New("rule ID, analyzer, and analyzer version provenance are required")
 	}
@@ -649,12 +670,26 @@ func validateProvenance(value Provenance, scannerVersion string) error {
 	}
 	switch value.EvidenceSource {
 	case EvidenceSourceTargetSource, EvidenceSourceInventoryMetadata:
-		if value.Analyzer != "plug-prejudice/deterministic" || value.AnalyzerVersion != scannerVersion {
+		if value.Analyzer != DeterministicAnalyzer || value.AnalyzerVersion != scannerVersion {
 			return errors.New("local evidence provenance does not match the trusted scanner identity")
 		}
 	case EvidenceSourceOmarchyAudit:
-		if value.Analyzer != OmarchyAuditAnalyzer {
-			return errors.New("Omarchy evidence provenance has an invalid analyzer identity")
+		switch value.Analyzer {
+		case OmarchyAuditAnalyzer:
+			if value.RuleID != OmarchyAuditObservationRule || (recordKind != provenanceOperation && recordKind != provenanceResource && recordKind != provenanceFinding) {
+				return errors.New("raw Omarchy observation provenance has an invalid rule or record kind")
+			}
+		case DeterministicAnalyzer:
+			if value.AnalyzerVersion != scannerVersion {
+				return errors.New("local external-evidence conclusion does not match the trusted scanner version")
+			}
+			allowed := (recordKind == provenanceFinding && value.RuleID == CoverageComparisonRule) ||
+				(recordKind == provenanceUnknown && (value.RuleID == ExternalBindingAssessmentRule || value.RuleID == ComparisonBudgetRule))
+			if !allowed {
+				return errors.New("local analyzer rule is not permitted to assert this external-evidence record")
+			}
+		default:
+			return errors.New("external evidence provenance has an unknown analyzer identity")
 		}
 	}
 	return nil
@@ -920,8 +955,8 @@ func coverageDifferenceShape(r Report, sourceKind NodeKind, sourceReference, fin
 		}
 		return item.Claim == ClaimFact && item.Severity == SeverityInformational && item.Confidence == ConfidenceHigh && item.Scope == ScopeUnknown &&
 			item.Category == CoverageDifferenceCategory && len(item.Evidence) == 1 && item.Evidence[0] == sourceEvidence && len(item.Related) == 0 &&
-			item.Provenance.RuleID == CoverageComparisonRule && item.Provenance.Analyzer == sourceProvenance.Analyzer &&
-			item.Provenance.AnalyzerVersion == sourceProvenance.AnalyzerVersion && item.Provenance.EvidenceSource == sourceProvenance.EvidenceSource
+			item.Provenance.RuleID == CoverageComparisonRule && item.Provenance.Analyzer == DeterministicAnalyzer &&
+			item.Provenance.AnalyzerVersion == r.Scan.ScannerVersion && item.Provenance.EvidenceSource == sourceProvenance.EvidenceSource
 	}
 	return false
 }
@@ -1054,7 +1089,7 @@ func validateAnchoredEvidence(evidence Evidence, provenance Provenance, files ma
 		if input.Type != EvidenceInputOmarchyAudit {
 			return errors.New("external evidence does not refer to a declared Omarchy audit input")
 		}
-		if provenance.Analyzer != OmarchyAuditAnalyzer || provenance.AnalyzerVersion != input.Version {
+		if provenance.Analyzer == OmarchyAuditAnalyzer && provenance.AnalyzerVersion != input.Version {
 			return errors.New("external evidence provenance does not match its declared input")
 		}
 	}
@@ -1076,8 +1111,8 @@ func validateExternalBindingUnknown(value Unknown, inputs map[string]EvidenceInp
 	if !exists || input.Type != EvidenceInputOmarchyAudit || input.SubjectRootDigest != "" {
 		return "", false, errors.New("external binding unknown does not identify one snapshot-unbound external input")
 	}
-	if value.Provenance.RuleID != OmarchyAuditObservationRule || value.Provenance.EvidenceSource != EvidenceSourceOmarchyAudit || value.Provenance.Analyzer != OmarchyAuditAnalyzer || value.Provenance.AnalyzerVersion != input.Version {
-		return "", false, errors.New("external binding unknown provenance does not match its declared input")
+	if value.Provenance.RuleID != ExternalBindingAssessmentRule || value.Provenance.EvidenceSource != EvidenceSourceOmarchyAudit || value.Provenance.Analyzer != DeterministicAnalyzer {
+		return "", false, errors.New("external binding unknown provenance is not a local binding assessment")
 	}
 	return input.ID, true, nil
 }

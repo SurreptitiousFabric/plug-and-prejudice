@@ -65,6 +65,16 @@ inventory declaration instead requires `subjectRootDigest` to equal the
 recomputed Plug & Prejudice inventory root. Neither field authenticates an
 analyzer or proves its observations correct.
 
+Schema 2.0.0 keeps assertion identity independent from evidence origin.
+`analyzer` and `analyzerVersion` identify the software that asserted a record;
+`evidenceSource` and each evidence item's `inputId` identify the evidence class
+and concrete declared input supporting it. A raw Omarchy observation is
+asserted by `omarchy/plugin-audit`. A Plug & Prejudice binding, coverage, or
+comparison-budget conclusion may cite that same Omarchy input but is asserted
+by the deterministic scanner. This provenance is structural attribution, not
+cryptographic authentication or proof of truth. Typed relationships remain
+validator-derived graph edges without separate provenance in this schema.
+
 ## Golden fixture
 
 `internal/report/testdata/report-v2.0.0.json` is a representative conforming
