@@ -13,7 +13,7 @@ var testProvenance = Provenance{RuleID: "test/v1", Analyzer: "plug-prejudice/det
 
 func appendTestExternalInput(r *Report, id string) Provenance {
 	provenance := Provenance{RuleID: OmarchyAuditObservationRule, Analyzer: OmarchyAuditAnalyzer, AnalyzerVersion: OmarchyAuditInputVersion, EvidenceSource: EvidenceSourceOmarchyAudit}
-	r.EvidenceInputs = append(r.EvidenceInputs, EvidenceInput{ID: id, Type: EvidenceInputOmarchyAudit, Label: "pinned test Omarchy audit", Format: OmarchyAuditInputFormat, Version: OmarchyAuditInputVersion})
+	r.EvidenceInputs = append(r.EvidenceInputs, NewOmarchyAuditEvidenceInput(id, "pinned test Omarchy audit", []byte(`{"commands":["curl"]}`)))
 	r.Status = StatusIncomplete
 	r.Unknowns = append(r.Unknowns, Unknown{ID: "unknown-binding-" + id, Category: ExternalEvidenceBindingCategory, Reason: UnknownExternalBinding, Scope: ScopeUnknown, Confidence: ConfidenceHigh, Title: "External input is not digest bound", Description: "Test input has no independently checked digest.", Evidence: []Evidence{{InputID: id, Path: "omarchy-audit.json"}}, Origins: []ValueOrigin{}, AffectedOperations: []string{}, SuppressedRules: []string{ExternalSnapshotBindingRule}, Provenance: provenance})
 	return provenance
@@ -118,7 +118,7 @@ func refreshTestRootDigest(r *Report) {
 	r.Target.RootDigest = digest
 	for index := range r.EvidenceInputs {
 		if r.EvidenceInputs[index].ID == TargetEvidenceInputID {
-			r.EvidenceInputs[index].Digest = digest
+			r.EvidenceInputs[index].SubjectRootDigest = digest
 		}
 	}
 }
@@ -275,7 +275,7 @@ func TestValidateRequiresCanonicalAndRecomputedRootDigest(t *testing.T) {
 	}
 	r := validReport()
 	r.Target.RootDigest = strings.Repeat("a", 64)
-	r.EvidenceInputs[0].Digest = r.Target.RootDigest
+	r.EvidenceInputs[0].SubjectRootDigest = r.Target.RootDigest
 	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("forged canonical root digest result = %v", err)
 	}

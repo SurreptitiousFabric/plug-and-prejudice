@@ -69,13 +69,13 @@ func TestInventoryRootDigestIsRecomputedAndFieldBound(t *testing.T) {
 	}
 
 	r := validReport()
-	if r.Target.RootDigest != empty || r.EvidenceInputs[0].Digest != empty {
-		t.Fatalf("producer/validator empty digest mismatch: report=%q input=%q calculated=%q", r.Target.RootDigest, r.EvidenceInputs[0].Digest, empty)
+	if r.Target.RootDigest != empty || r.EvidenceInputs[0].SubjectRootDigest != empty {
+		t.Fatalf("producer/validator empty digest mismatch: report=%q input=%q calculated=%q", r.Target.RootDigest, r.EvidenceInputs[0].SubjectRootDigest, empty)
 	}
 	forged := r
 	forged.Target.RootDigest = strings.Repeat("a", 64)
 	forged.EvidenceInputs = append([]EvidenceInput(nil), r.EvidenceInputs...)
-	forged.EvidenceInputs[0].Digest = forged.Target.RootDigest
+	forged.EvidenceInputs[0].SubjectRootDigest = forged.Target.RootDigest
 	if err := forged.Validate(); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("forged digest result = %v", err)
 	}
@@ -93,8 +93,8 @@ func TestInventoryRootDigestIsRecomputedAndFieldBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	decoded, err := Decode(encoded)
-	if err != nil || decoded.Target.RootDigest != empty || decoded.EvidenceInputs[0].Digest != empty {
-		t.Fatalf("canonical digest round trip = %q/%q, %v", decoded.Target.RootDigest, decoded.EvidenceInputs[0].Digest, err)
+	if err != nil || decoded.Target.RootDigest != empty || decoded.EvidenceInputs[0].SubjectRootDigest != empty {
+		t.Fatalf("canonical digest round trip = %q/%q, %v", decoded.Target.RootDigest, decoded.EvidenceInputs[0].SubjectRootDigest, err)
 	}
 }
 
@@ -103,11 +103,12 @@ func TestTargetEvidenceInputIdentityFormatAndUniqueness(t *testing.T) {
 		name   string
 		mutate func(*Report)
 	}{
-		{"missing-digest", func(r *Report) { r.Target.RootDigest = ""; r.EvidenceInputs[0].Digest = "" }},
+		{"missing-subject-root-digest", func(r *Report) { r.Target.RootDigest = ""; r.EvidenceInputs[0].SubjectRootDigest = "" }},
+		{"target-document-digest", func(r *Report) { r.EvidenceInputs[0].DocumentSHA256 = strings.Repeat("a", 64) }},
 		{"wrong-format", func(r *Report) { r.EvidenceInputs[0].Format = "other" }},
 		{"wrong-version", func(r *Report) { r.EvidenceInputs[0].Version = "1.0.0" }},
 		{"second-target", func(r *Report) {
-			r.EvidenceInputs = append(r.EvidenceInputs, EvidenceInput{ID: "input-target-2", Type: EvidenceInputTarget, Label: "second", Digest: r.Target.RootDigest, Format: TargetEvidenceInputFormat, Version: TargetEvidenceInputVersion})
+			r.EvidenceInputs = append(r.EvidenceInputs, EvidenceInput{ID: "input-target-2", Type: EvidenceInputTarget, Label: "second", SubjectRootDigest: r.Target.RootDigest, Format: TargetEvidenceInputFormat, Version: TargetEvidenceInputVersion})
 		}},
 	}
 	for _, test := range tests {
@@ -148,7 +149,7 @@ func TestProducerRejectsInvalidUTF8WithoutPartialOutput(t *testing.T) {
 				r.Target.Manifest = &Manifest{ID: "m", Name: "m", Version: "1", Kinds: []string{}, EntryPoints: map[string]string{value: "plugin.sh"}}
 			}},
 			{"external-input-label", func(r *Report) {
-				r.EvidenceInputs = append(r.EvidenceInputs, EvidenceInput{ID: "input-omarchy", Type: EvidenceInputOmarchyAudit, Label: value, Digest: strings.Repeat("b", 64), Format: OmarchyAuditInputFormat, Version: OmarchyAuditInputVersion})
+				r.EvidenceInputs = append(r.EvidenceInputs, EvidenceInput{ID: "input-omarchy", Type: EvidenceInputOmarchyAudit, Label: value, DocumentSHA256: strings.Repeat("b", 64), Format: OmarchyAuditInputFormat, Version: OmarchyAuditInputVersion})
 			}},
 		}
 		for _, test := range tests {
@@ -241,9 +242,9 @@ func TestNativeUnknownMustBeLocalAndTargetAnchored(t *testing.T) {
 	}
 }
 
-func TestUndigestedExternalInputsRequireExactBindingUnknown(t *testing.T) {
+func TestSnapshotUnboundExternalInputsRequireExactBindingUnknown(t *testing.T) {
 	without := validReport()
-	without.EvidenceInputs = append(without.EvidenceInputs, EvidenceInput{ID: "input-omarchy", Type: EvidenceInputOmarchyAudit, Label: "audit", Format: OmarchyAuditInputFormat, Version: OmarchyAuditInputVersion})
+	without.EvidenceInputs = append(without.EvidenceInputs, NewOmarchyAuditEvidenceInput("input-omarchy", "audit", []byte(`{"commands":["curl"]}`)))
 	if err := without.Validate(); err == nil || !strings.Contains(err.Error(), "binding unknown") {
 		t.Fatalf("missing binding result = %v", err)
 	}
@@ -263,7 +264,7 @@ func TestUndigestedExternalInputsRequireExactBindingUnknown(t *testing.T) {
 	wrong := valid
 	wrong.Unknowns = append([]Unknown(nil), valid.Unknowns...)
 	wrong.EvidenceInputs = append([]EvidenceInput(nil), valid.EvidenceInputs...)
-	wrong.EvidenceInputs = append(wrong.EvidenceInputs, EvidenceInput{ID: "input-other-external", Type: EvidenceInputOmarchyAudit, Label: "other audit", Digest: strings.Repeat("c", 64), Format: OmarchyAuditInputFormat, Version: OmarchyAuditInputVersion})
+	wrong.EvidenceInputs = append(wrong.EvidenceInputs, NewOmarchyAuditEvidenceInput("input-other-external", "other audit", []byte(`{"commands":["wget"]}`)))
 	wrong.Unknowns[0].Evidence = []Evidence{{InputID: "input-other-external", Path: "other-audit.json"}}
 	if err := wrong.Validate(); err == nil {
 		t.Fatal("binding unknown for wrong input accepted")
@@ -276,16 +277,8 @@ func TestUndigestedExternalInputsRequireExactBindingUnknown(t *testing.T) {
 		t.Fatalf("malformed binding result = %v", err)
 	}
 
-	digested := validReport()
-	digested.EvidenceInputs = append(digested.EvidenceInputs, EvidenceInput{ID: "input-omarchy", Type: EvidenceInputOmarchyAudit, Label: "audit", Digest: strings.Repeat("b", 64), Format: OmarchyAuditInputFormat, Version: OmarchyAuditInputVersion})
-	if err := digested.Validate(); err != nil {
-		t.Fatalf("digested external input rejected: %v", err)
-	}
-
-	mismatch := digested
-	mismatch.Status = StatusIncomplete
+	mismatch := valid
 	mismatch.Operations = []Operation{{ID: "external", Category: "external", Command: "curl", Scope: ScopeUnknown, Confidence: ConfidenceHigh, Evidence: Evidence{InputID: "input-omarchy", Path: "audit.json"}, Provenance: Provenance{RuleID: OmarchyAuditObservationRule, Analyzer: OmarchyAuditAnalyzer, AnalyzerVersion: "wrong", EvidenceSource: EvidenceSourceOmarchyAudit}}}
-	mismatch.Limitations = []Limitation{{Code: "test", Description: "test"}}
 	if err := mismatch.BuildEvidenceGraph(); err != nil {
 		t.Fatal(err)
 	}

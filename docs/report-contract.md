@@ -39,6 +39,18 @@ Optional limitation/error paths, when present, obey the same canonical target-re
 path rule. These invariants are checked after strict JSON decoding and before
 presentation.
 
+Evidence-input digest fields have separate meanings. `documentSha256` is the
+lowercase SHA-256 of the exact pinned external document bytes parsed by the
+trusted importer. It establishes document identity only; it neither identifies
+the plugin snapshot described by that document nor proves the external
+analyzer correct. `subjectRootDigest` identifies the target snapshot an
+external format claims to have analyzed. The validator accepts that field only
+for an explicitly supported format whose trusted importer obtains it from the
+format, and requires it to equal the independently recomputed
+`target.rootDigest`. The mandatory `input-target` declaration uses
+`subjectRootDigest` to repeat that independently recomputed inventory root and
+does not use `documentSha256`.
+
 An inventory entry marked `inspected` has exactly one canonical lowercase
 SHA-256 digest and no skip reason; an uninspected entry has no content digest.
 Link targets belong only to symlink entries. Parsed binary metadata belongs
@@ -121,13 +133,17 @@ must equal the reconstructed source subject. Exact matches
 may be connected with `corroborates`; retained-set differences use
 `disagrees-with` plus an informational coverage finding. Neither edge asserts
 correctness or safety: a disagreement means only that one source retained the
-observation while the compared source retained no matching observation. Every
-undigested external input requires exactly shaped, source-bound
-`external-input-unbound` uncertainty even after manifest-ID matching. A
-syntactically valid SHA-256 on an external input represents a digest already
-calculated over the pinned input by the trusted importer; the report validator
-binds evidence to that declaration but cannot recreate an external digest from
-bytes that are intentionally not embedded in the report.
+observation while the compared source retained no matching observation. The
+current pinned Omarchy PR #8439 format does not supply a target snapshot root.
+Its trusted importer calculates `documentSha256` from the exact pinned audit
+bytes, but the exact source-bound `external-input-unbound` unknown remains
+mandatory regardless of that document digest. Consequently a current-format
+Omarchy input cannot produce a `complete` report. A future external format may
+omit this unknown only after its explicit format policy permits
+`subjectRootDigest` and the supplied value matches the independently recomputed
+target inventory root. A document digest is never copied or interpreted as a
+subject digest, and neither digest proves that the external analyzer was
+correct.
 
 `target.rootDigest` is mandatory, including for an empty inventory. The
 producer and accepting validator share one algorithm, and the validator

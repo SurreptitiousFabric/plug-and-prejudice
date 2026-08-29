@@ -44,6 +44,10 @@ func Decode(data []byte) (Report, error) {
 }
 
 func (r Report) Validate() error {
+	return r.validateWithEvidenceInputPolicies(supportedExternalEvidenceInputPolicies[:])
+}
+
+func (r Report) validateWithEvidenceInputPolicies(policies []externalEvidenceInputPolicy) error {
 	if r.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("unsupported report schema %q", r.SchemaVersion)
 	}
@@ -90,7 +94,7 @@ func (r Report) Validate() error {
 	if r.Target.FileCount != len(r.Inventory) {
 		return fmt.Errorf("target file count %d does not match inventory length %d", r.Target.FileCount, len(r.Inventory))
 	}
-	inputs, err := validateEvidenceInputs(r)
+	inputs, err := validateEvidenceInputs(r, policies)
 	if err != nil {
 		return err
 	}
@@ -216,7 +220,7 @@ func (r Report) Validate() error {
 	if err != nil {
 		return fmt.Errorf("target inventory root digest: %w", err)
 	}
-	if r.Target.RootDigest != recomputedRoot || inputs[TargetEvidenceInputID].Digest != recomputedRoot {
+	if r.Target.RootDigest != recomputedRoot || inputs[TargetEvidenceInputID].SubjectRootDigest != recomputedRoot {
 		return errors.New("target root digest does not match the retained inventory")
 	}
 
@@ -402,8 +406,8 @@ func (r Report) Validate() error {
 		}
 	}
 	for _, input := range r.EvidenceInputs {
-		if input.Type == EvidenceInputOmarchyAudit && input.Digest == "" && !externalBindingUnknowns[input.ID] {
-			return fmt.Errorf("undigested external evidence input %q lacks an explicit binding unknown", input.ID)
+		if input.Type == EvidenceInputOmarchyAudit && input.SubjectRootDigest == "" && !externalBindingUnknowns[input.ID] {
+			return fmt.Errorf("snapshot-unbound external evidence input %q lacks an explicit binding unknown", input.ID)
 		}
 	}
 	if err := validateRelationships(r, referenceKinds, referenceProvenance); err != nil {
@@ -947,9 +951,34 @@ func validateEvidence(evidence Evidence) error {
 	return nil
 }
 
-func validateEvidenceInputs(r Report) (map[string]EvidenceInput, error) {
+type externalEvidenceInputPolicy struct {
+	Type                      EvidenceInputType
+	Format                    string
+	Version                   string
+	RequiresDocumentSHA256    bool
+	SuppliesSubjectRootDigest bool
+}
+
+// The production policy deliberately lists no subject-binding external format.
+// Tests inject a synthetic future policy to exercise that path without treating
+// producer-selected format metadata as authorization.
+var supportedExternalEvidenceInputPolicies = [...]externalEvidenceInputPolicy{{
+	Type: EvidenceInputOmarchyAudit, Format: OmarchyAuditInputFormat, Version: OmarchyAuditInputVersion,
+	RequiresDocumentSHA256:    true,
+	SuppliesSubjectRootDigest: false,
+}}
+
+func validateEvidenceInputs(r Report, policies []externalEvidenceInputPolicy) (map[string]EvidenceInput, error) {
 	if len(r.EvidenceInputs) == 0 || len(r.EvidenceInputs) > MaxEvidenceInputs {
 		return nil, errors.New("report requires a bounded evidence-input declaration")
+	}
+	policyFor := func(input EvidenceInput) (externalEvidenceInputPolicy, bool) {
+		for _, policy := range policies {
+			if input.Type == policy.Type && input.Format == policy.Format && input.Version == policy.Version {
+				return policy, true
+			}
+		}
+		return externalEvidenceInputPolicy{}, false
 	}
 	values := make(map[string]EvidenceInput, len(r.EvidenceInputs))
 	targetCount := 0
@@ -966,24 +995,40 @@ func validateEvidenceInputs(r Report) (map[string]EvidenceInput, error) {
 		switch input.Type {
 		case EvidenceInputTarget:
 			targetCount++
-			if input.ID != TargetEvidenceInputID || input.Format != TargetEvidenceInputFormat || input.Version != TargetEvidenceInputVersion || input.Digest == "" {
-				return nil, errors.New("target evidence input has an invalid identity, format, version, or digest")
+			if input.ID != TargetEvidenceInputID || input.Format != TargetEvidenceInputFormat || input.Version != TargetEvidenceInputVersion || input.DocumentSHA256 != "" || input.SubjectRootDigest == "" {
+				return nil, errors.New("target evidence input has an invalid identity, format, version, or subject root digest")
 			}
 		case EvidenceInputOmarchyAudit:
-			if input.ID == TargetEvidenceInputID || input.Format != OmarchyAuditInputFormat || input.Version != OmarchyAuditInputVersion {
+			policy, supported := policyFor(input)
+			if input.ID == TargetEvidenceInputID || !supported {
 				return nil, fmt.Errorf("external evidence input %q has unsupported identity, format, or version", input.ID)
 			}
-		}
-		if input.Digest != "" {
-			decoded, err := hex.DecodeString(input.Digest)
-			if err != nil || len(decoded) != 32 || strings.ToLower(input.Digest) != input.Digest {
-				return nil, fmt.Errorf("evidence input %q digest must be lowercase SHA-256", input.ID)
+			if policy.RequiresDocumentSHA256 && input.DocumentSHA256 == "" {
+				return nil, fmt.Errorf("external evidence input %q requires a document SHA-256", input.ID)
 			}
+			if input.SubjectRootDigest != "" && !policy.SuppliesSubjectRootDigest {
+				return nil, fmt.Errorf("external evidence input %q format does not supply a subject root digest", input.ID)
+			}
+		}
+		for _, field := range []struct{ name, digest string }{
+			{name: "document SHA-256", digest: input.DocumentSHA256},
+			{name: "subject root digest", digest: input.SubjectRootDigest},
+		} {
+			if field.digest == "" {
+				continue
+			}
+			decoded, err := hex.DecodeString(field.digest)
+			if err != nil || len(decoded) != 32 || strings.ToLower(field.digest) != field.digest {
+				return nil, fmt.Errorf("evidence input %q %s must be lowercase SHA-256", input.ID, field.name)
+			}
+		}
+		if input.Type == EvidenceInputOmarchyAudit && input.SubjectRootDigest != "" && input.SubjectRootDigest != r.Target.RootDigest {
+			return nil, fmt.Errorf("external evidence input %q subject root digest does not match the retained target inventory", input.ID)
 		}
 		values[input.ID] = input
 	}
 	target, exists := values[TargetEvidenceInputID]
-	if targetCount != 1 || !exists || target.Type != EvidenceInputTarget || target.Digest != r.Target.RootDigest {
+	if targetCount != 1 || !exists || target.Type != EvidenceInputTarget || target.SubjectRootDigest != r.Target.RootDigest {
 		return nil, errors.New("target evidence input must identify and bind the retained target inventory")
 	}
 	return values, nil
@@ -1028,8 +1073,8 @@ func validateExternalBindingUnknown(value Unknown, inputs map[string]EvidenceInp
 		return "", false, errors.New("external binding unknown has an invalid structural shape")
 	}
 	input, exists := inputs[value.Evidence[0].InputID]
-	if !exists || input.Type != EvidenceInputOmarchyAudit || input.Digest != "" {
-		return "", false, errors.New("external binding unknown does not identify one undigested external input")
+	if !exists || input.Type != EvidenceInputOmarchyAudit || input.SubjectRootDigest != "" {
+		return "", false, errors.New("external binding unknown does not identify one snapshot-unbound external input")
 	}
 	if value.Provenance.RuleID != OmarchyAuditObservationRule || value.Provenance.EvidenceSource != EvidenceSourceOmarchyAudit || value.Provenance.Analyzer != OmarchyAuditAnalyzer || value.Provenance.AnalyzerVersion != input.Version {
 		return "", false, errors.New("external binding unknown provenance does not match its declared input")

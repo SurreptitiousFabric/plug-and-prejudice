@@ -46,6 +46,25 @@ Any schema change must:
 There is no automatic downgrade, field stripping, best-effort rendering, or
 network schema lookup. A report is self-contained and local.
 
+## Evidence-input digest semantics
+
+Schema 2.0.0 keeps external document identity separate from target-snapshot
+identity. `documentSha256`, when present, is the lowercase SHA-256 calculated
+by the trusted importer from the exact pinned external bytes it parses. It does
+not bind those bytes to `target.rootDigest`. `subjectRootDigest` names the
+snapshot an external format claims to cover and establishes binding only when
+that exact format/version is listed by the accepting policy as supplying the
+field and the value equals the validator's independently recomputed target
+root. Producers cannot select arbitrary format metadata to opt into that
+meaning.
+
+The current `omarchy-plugin-audit` / `pr8439-732b104` policy requires a
+calculated document SHA-256, does not accept `subjectRootDigest`, and therefore
+always requires the dedicated external-input binding unknown. The target
+inventory declaration instead requires `subjectRootDigest` to equal the
+recomputed Plug & Prejudice inventory root. Neither field authenticates an
+analyzer or proves its observations correct.
+
 ## Golden fixture
 
 `internal/report/testdata/report-v2.0.0.json` is a representative conforming

@@ -410,12 +410,13 @@ const (
 )
 
 type EvidenceInput struct {
-	ID      string            `json:"id"`
-	Type    EvidenceInputType `json:"type"`
-	Label   string            `json:"label"`
-	Digest  string            `json:"digest,omitempty"`
-	Format  string            `json:"format"`
-	Version string            `json:"version"`
+	ID                string            `json:"id"`
+	Type              EvidenceInputType `json:"type"`
+	Label             string            `json:"label"`
+	DocumentSHA256    string            `json:"documentSha256,omitempty"`
+	SubjectRootDigest string            `json:"subjectRootDigest,omitempty"`
+	Format            string            `json:"format"`
+	Version           string            `json:"version"`
 }
 
 type ComparisonBasis struct {
