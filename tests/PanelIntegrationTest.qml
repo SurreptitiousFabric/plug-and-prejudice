@@ -65,9 +65,11 @@ ShellRoot {
       }
       if (testRoot.phase === 1 && !testRoot.panel.busy && testRoot.panel.view === "report") {
         var report = testRoot.panel.currentReport
-        if (!report || report.schemaVersion !== "1.0.0" || !report.scan.sandboxed
-            || !Array.isArray(report.findings) || !Array.isArray(report.resources)
-            || !Array.isArray(report.limitations)) {
+        if (!report || report.schemaVersion !== "2.0.0" || !report.scan.sandboxed
+            || !Array.isArray(report.findings) || !Array.isArray(report.operations) || !Array.isArray(report.resources)
+            || !Array.isArray(report.relationships)
+            || !Array.isArray(report.unknowns)
+            || !Array.isArray(report.limitations) || !Array.isArray(report.errors)) {
           testRoot.fail("report model is incomplete")
           return
         }
