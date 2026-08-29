@@ -109,6 +109,17 @@ func TestRequireStaticELFRejectsNonELF(t *testing.T) {
 	}
 }
 
+func TestRequireStaticELFRejectsDynamicELF(t *testing.T) {
+	file, err := os.Open("/usr/bin/true")
+	if err != nil {
+		t.Skipf("dynamic system executable unavailable: %v", err)
+	}
+	defer file.Close()
+	if err := requireStaticELF(file); err == nil || !strings.Contains(err.Error(), "dynamically linked") {
+		t.Fatalf("dynamic ELF result = %v", err)
+	}
+}
+
 func TestBubblewrapIsolation(t *testing.T) {
 	bwrap, probe := trustedProbe(t)
 	probeFile, err := os.Open(probe)
@@ -175,6 +186,24 @@ func TestBubblewrapBoundsSimultaneousStdoutAndStderrExhaustion(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > policy.ProcessWaitDelay+time.Second {
 		t.Fatalf("simultaneous output teardown took %s", elapsed)
+	}
+}
+
+func TestBubblewrapBoundsAsymmetricOutputExhaustionWithRetainedPipe(t *testing.T) {
+	for _, mode := range []string{"stdout-overflow-stderr-held", "stderr-overflow-stdout-held"} {
+		t.Run(mode, func(t *testing.T) {
+			bwrap, probe := trustedProbe(t)
+			target := probeTarget(t)
+			runner := Runner{Bubblewrap: bwrap, Timeout: 5 * time.Second, AllowDevelopmentScanner: true}
+			started := time.Now()
+			_, err := runner.Run(context.Background(), probe, target, mode)
+			if err == nil || !strings.Contains(err.Error(), "exceeded") {
+				t.Fatalf("asymmetric output result = %v", err)
+			}
+			if elapsed := time.Since(started); elapsed > policy.ProcessWaitDelay+time.Second {
+				t.Fatalf("retained opposite pipe delayed teardown for %s", elapsed)
+			}
+		})
 	}
 }
 

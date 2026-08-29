@@ -16,6 +16,7 @@ import (
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/trustedexec"
+	"golang.org/x/sys/unix"
 )
 
 const systemdRunPath = "/usr/bin/systemd-run"
@@ -73,7 +74,10 @@ func (m Manager) Run(ctx context.Context, unit, executable string, arguments []s
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
+	cmd.Env, err = userManagerEnvironment()
+	if err != nil {
+		return fmt.Errorf("construct trusted systemd-run environment: %w", err)
+	}
 	runErr := cmd.Run()
 	teardownErr := m.Terminate(context.Background(), unit)
 	if runErr != nil {
@@ -183,18 +187,43 @@ func (m Manager) Terminate(ctx context.Context, unit string) error {
 	if !validUnitName(unit) {
 		return errors.New("resource scope unit name is invalid")
 	}
-	timed, cancel := context.WithTimeout(ctx, policy.TeardownTimeout)
+	teardown, cancel := context.WithTimeout(ctx, policy.TeardownTimeout)
 	defer cancel()
-	_, err := m.systemctl(timed, "kill", unit, "--kill-whom=all", "--signal=KILL", "--no-block")
-	if err == nil {
+
+	loadState, err := m.systemctl(teardown, "show", unit, "--property=LoadState", "--value", "--no-pager")
+	if err != nil {
+		return fmt.Errorf("query resource scope before teardown: %w", err)
+	}
+	if strings.TrimSpace(string(loadState)) == "not-found" {
 		return nil
 	}
-	// A collected scope with no remaining processes is already safely empty.
-	state, showErr := m.systemctl(timed, "show", unit, "--property=ActiveState", "--value", "--no-pager")
-	if showErr == nil && strings.TrimSpace(string(state)) == "inactive" {
-		return nil
+	controlGroup, err := m.systemctl(teardown, "show", unit, "--property=ControlGroup", "--value", "--no-pager")
+	if err != nil {
+		return fmt.Errorf("query resource scope cgroup: %w", err)
 	}
-	return fmt.Errorf("terminate resource scope: %w", err)
+	controlGroupText := strings.TrimSpace(string(controlGroup))
+	if controlGroupText == "" {
+		activeState, stateErr := m.systemctl(teardown, "show", unit, "--property=ActiveState", "--value", "--no-pager")
+		if stateErr == nil && (strings.TrimSpace(string(activeState)) == "inactive" || strings.TrimSpace(string(activeState)) == "failed") {
+			return nil
+		}
+		return errors.New("resource scope has no ControlGroup but is not confirmed inactive")
+	}
+	directory, err := m.cgroupDirectory(unit, controlGroupText)
+	if err != nil {
+		return fmt.Errorf("validate resource scope cgroup: %w", err)
+	}
+
+	killContext, killCancel := context.WithTimeout(teardown, policy.TeardownCommandTimeout)
+	_, killErr := m.systemctl(killContext, "kill", unit, "--kill-whom=all", "--signal=KILL", "--no-block")
+	killCancel()
+	if err := waitCgroupEmpty(teardown, directory); err == nil {
+		return nil
+	} else if killErr != nil {
+		return errors.Join(fmt.Errorf("request whole-scope termination: %w", killErr), err)
+	} else {
+		return fmt.Errorf("verify whole-scope termination: %w", err)
+	}
 }
 
 func (m Manager) systemctl(ctx context.Context, arguments ...string) ([]byte, error) {
@@ -212,8 +241,107 @@ func (m Manager) systemctl(ctx context.Context, arguments ...string) ([]byte, er
 	}
 	cmd := exec.CommandContext(ctx, procPath, args...)
 	cmd.WaitDelay = policy.ProcessWaitDelay
-	cmd.Env = os.Environ()
+	cmd.Env, err = userManagerEnvironment()
+	if err != nil {
+		return nil, fmt.Errorf("construct trusted systemctl environment: %w", err)
+	}
 	return cmd.Output()
+}
+
+func userManagerEnvironment() ([]string, error) {
+	runtimeDirectory := "/run/user/" + strconv.Itoa(os.Geteuid())
+	fd, err := unix.Openat2(unix.AT_FDCWD, runtimeDirectory, &unix.OpenHow{
+		Flags:   unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
+		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open user runtime directory: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), runtimeDirectory)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("create user runtime directory descriptor")
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect user runtime directory: %w", err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.IsDir() || stat.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0o077 != 0 {
+		return nil, errors.New("user runtime directory has unsafe ownership, type, or mode")
+	}
+	return []string{
+		"XDG_RUNTIME_DIR=" + runtimeDirectory,
+		"LANG=C",
+		"LC_ALL=C",
+		"SYSTEMD_PAGER=cat",
+		"SYSTEMD_COLORS=0",
+		"SYSTEMD_URLIFY=0",
+	}, nil
+}
+
+func (m Manager) cgroupDirectory(unit, cgroupPath string) (string, error) {
+	if cgroupPath == "" || !filepath.IsAbs(cgroupPath) || filepath.Clean(cgroupPath) != cgroupPath || filepath.Base(cgroupPath) != unit {
+		return "", errors.New("scope ControlGroup is empty, malformed, or does not match the expected unit")
+	}
+	root, err := filepath.Abs(m.CgroupRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve cgroup root: %w", err)
+	}
+	directory := filepath.Join(root, strings.TrimPrefix(cgroupPath, string(filepath.Separator)))
+	if directory == root || !strings.HasPrefix(directory, root+string(filepath.Separator)) {
+		return "", errors.New("scope ControlGroup escapes cgroup root")
+	}
+	return directory, nil
+}
+
+func waitCgroupEmpty(ctx context.Context, directory string) error {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		data, err := os.ReadFile(filepath.Join(directory, "cgroup.events"))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		populated, err := parseCgroupPopulated(data)
+		if err != nil {
+			return err
+		}
+		if !populated {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func parseCgroupPopulated(data []byte) (bool, error) {
+	if len(data) > 4096 {
+		return false, errors.New("cgroup.events exceeds limit")
+	}
+	found := false
+	populated := false
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "populated" {
+			if found || (fields[1] != "0" && fields[1] != "1") {
+				return false, errors.New("cgroup.events has malformed or duplicate populated state")
+			}
+			found = true
+			populated = fields[1] == "1"
+		}
+	}
+	if !found {
+		return false, errors.New("cgroup.events omits populated state")
+	}
+	return populated, nil
 }
 
 func ApplyProcessLimits() error {

@@ -100,6 +100,28 @@ func TestPinnedDescriptorSurvivesPathReplacement(t *testing.T) {
 	}
 }
 
+func TestPinnedDescriptorExecutionSurvivesExtraFileRemapping(t *testing.T) {
+	executable, err := Open("/usr/bin/true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer executable.Close()
+	extra, err := os.Open("/dev/null")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer extra.Close()
+	procPath, args, err := executable.CommandPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(procPath, args...)
+	cmd.ExtraFiles = []*os.File{extra, extra}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("execute pinned tool with inherited descriptors: %v: %s", err, output)
+	}
+}
+
 func TestOpenRejectsWritableExecutable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tool")
 	if err := os.WriteFile(path, []byte("tool"), 0o722); err != nil {
