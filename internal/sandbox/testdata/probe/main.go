@@ -19,6 +19,8 @@ func main() {
 	displayName := flag.String("display-name", "", "trusted test mode")
 	_ = flag.Bool("sandboxed", false, "ignored compatibility flag")
 	_ = flag.Bool("resource-limited", false, "ignored compatibility flag")
+	audit := flag.String("omarchy-audit", "", "optional evidence path")
+	_ = flag.String("omarchy-audit-format", "", "ignored pinned format")
 	flag.Parse()
 	if *displayName == "timeout" {
 		time.Sleep(10 * time.Second)
@@ -101,6 +103,11 @@ func main() {
 		time.Sleep(10 * time.Second)
 		return
 	}
+	if *displayName == "diagnostic-output" {
+		_, _ = os.Stderr.Write(make([]byte, 65<<10))
+		time.Sleep(10 * time.Second)
+		return
+	}
 	result := map[string]bool{
 		"readHostEtc":         canRead("/etc/passwd"),
 		"readHostHome":        canRead("/home"),
@@ -113,6 +120,9 @@ func main() {
 		"nestedUserNamespace": canCreateUserNamespace(),
 		"cgroupMigration":     canMigrateCgroup(),
 		"environmentMinimal":  minimalEnvironment(),
+		"readAudit":           *audit != "" && canRead(*audit),
+		"writeAudit":          *audit != "" && canWrite(*audit),
+		"readAuditSibling":    canRead("/audit/sibling"),
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(result)
 }

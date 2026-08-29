@@ -1,6 +1,6 @@
 # 0003: Systemd resource scope composition
 
-- Status: proposed; implementation pending human security review
+- Status: implemented; independent human security review pending
 - Date: 2026-08-27
 
 ## Context
@@ -34,7 +34,8 @@ policy. Only bounded decimal `us`, `ms`, and `s` representations are accepted;
 unfamiliar output fails closed as an availability error. It then lowers `RLIMIT_CORE` to zero and
 `RLIMIT_NOFILE` to at most 256. Only after those checks does it resolve the
 installed plugin and open the target/scanner descriptors for Bubblewrap.
-The broker opens fixed `/usr/bin/systemd-run`, `/usr/bin/systemctl`, and `/usr/bin/bwrap` paths with
+The broker opens fixed `/usr/bin/systemd-run`, `/usr/bin/systemctl`, and
+`/usr/bin/bwrap` paths with
 Linux `openat2`, rejecting symlinks and magic links, then verifies each pinned
 descriptor is a root-owned, executable, non-group/world-writable ELF regular file.
 Execution uses `/proc/self/fd/N`, which Linux resolves to that open inode during
@@ -64,9 +65,15 @@ for the scoped command, 2 seconds for command reaping, 3 seconds for teardown
 and cgroup-empty observation, and 2 seconds for final trusted-tool reaping.
 Caller cancellation does not cancel cleanup, but cleanup retains that original
 absolute deadline. Policy invariant tests reject inconsistent future values.
-
 The report records the exact enforced policy. The trusted broker rejects a
 scanner report whose resource metadata differs from its compiled policy.
+
+The `--resource-scope` re-entry value is an internal scope identifier, not a
+secret capability. Verification binds it structurally to the current process:
+the current unified cgroup must have that exact, tightly validated basename and
+the four cgroup-exposed limits must be no weaker than policy. This prevents an
+ordinary direct invocation from merely asserting that containment exists.
+It does not establish which process created the scope.
 
 ## Rationale
 
@@ -92,8 +99,6 @@ process memory outside the intended output path.
   the broker before descriptors are opened avoids it.
 - Giving Bubblewrap access to the user systemd bus would violate the sandbox's
   session isolation.
-- Killing only Bubblewrap cannot prove descendant teardown when a hostile child
-  retains pipes; the outer broker therefore cleans the authoritative scope.
 
 ## Consequences and residual risk
 
@@ -102,6 +107,12 @@ to Bubblewrap; failure is explicit and closed. The user-session broker retains
 the authority needed to ask the user manager for its own scope. Kernel,
 systemd, and cgroup implementation bugs remain out of scope. Resource ceilings
 reduce denial-of-service impact but cannot prove scanner correctness.
+`RuntimeMaxSec` is a systemd unit property rather than a cgroup-v2 control. The
+scoped broker therefore also invokes fixed, root-owned `/usr/bin/systemctl` to
+query the live unit's `RuntimeMaxUSec` property, bounds the response and query
+time, and rejects missing, unlimited, malformed, zero, or weaker values. The
+independent Bubblewrap 30-second deadline remains defense in depth.
+
 The supported deployment is the independently root-installed CLI launched from
 the normal host session. The broker assumes it starts in the real host user and mount namespaces; an
 attacker who already controls those namespaces could substitute the apparent

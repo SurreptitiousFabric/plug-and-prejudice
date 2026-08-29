@@ -21,8 +21,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const systemdRunPath = "/usr/bin/systemd-run"
-const systemctlPath = "/usr/bin/systemctl"
+const (
+	systemdRunPath = "/usr/bin/systemd-run"
+	systemctlPath  = "/usr/bin/systemctl"
+)
 
 type Manager struct {
 	SystemdRun string
@@ -55,7 +57,7 @@ func DefaultManager() (Manager, error) {
 	defer systemdRun.Close()
 	systemctl, err := trustedexec.Open(systemctlPath)
 	if err != nil {
-		return Manager{}, fmt.Errorf("trusted systemctl is required; refusing to scan without runtime verification: %w", err)
+		return Manager{}, fmt.Errorf("trusted systemctl is required; refusing to scan without lifetime verification: %w", err)
 	}
 	defer systemctl.Close()
 	return Manager{SystemdRun: systemdRunPath, Systemctl: systemctlPath, CgroupRoot: "/sys/fs/cgroup", ProcCgroup: "/proc/self/cgroup"}, nil
@@ -198,7 +200,9 @@ func (m Manager) VerifyRuntime(ctx context.Context, unit string) error {
 	if !validUnitName(unit) {
 		return errors.New("resource scope unit name is invalid")
 	}
-	output, err := m.systemctl(ctx, "show", unit, "--property=RuntimeMaxUSec", "--value", "--no-pager")
+	timed, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	output, err := m.systemctl(timed, "show", unit, "--property=RuntimeMaxUSec", "--value", "--no-pager")
 	if err != nil {
 		return fmt.Errorf("query live scope lifetime: %w", err)
 	}
