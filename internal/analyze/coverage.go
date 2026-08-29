@@ -67,7 +67,7 @@ func coverageArtifactClass(file report.File, data []byte, retained bool) (suppor
 		return true, false
 	}
 	if retained {
-		if isShell(name, data) || strings.EqualFold(filepath.Ext(name), ".qml") || treeSitterLanguage(name, data) != "" {
+		if isShell(name, data) || strings.EqualFold(filepath.Ext(name), ".qml") || strings.EqualFold(filepath.Ext(name), ".desktop") || isSystemdUnitPath(name) || isHyprlandConfigPath(name) || treeSitterLanguage(name, data) != "" {
 			return true, false
 		}
 		if unsupportedLanguage(name, data) != "" {
@@ -76,6 +76,9 @@ func coverageArtifactClass(file report.File, data []byte, retained bool) (suppor
 		return false, false
 	}
 	extension := strings.ToLower(filepath.Ext(name))
+	if isSystemdUnitPath(name) || isHyprlandConfigPath(name) {
+		return true, false
+	}
 	if oneOfCoverageExtension(extension, ".sh", ".bash", ".zsh", ".qml", ".desktop", ".py", ".pyw", ".js", ".mjs", ".cjs", ".jsx", ".zip", ".tar", ".gz", ".xz", ".zst", ".zstd", ".bz2") {
 		return true, false
 	}
