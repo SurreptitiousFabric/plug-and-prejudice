@@ -57,6 +57,12 @@ process rlimits disable core dumps and cap open descriptors. The broker fails
 closed if the user manager or cgroup-v2 controls cannot establish and prove the
 policy.
 
+Plugin listing is also performed only after this verification and is incremental
+and bounded. The production scanner and all three containment executables are
+root-owned, non-group/world-writable pinned inodes. The selected plugin is
+opened descriptor-relatively beneath a pinned plugin root. Scanner traversal is
+rooted at that descriptor and detected target mutation aborts the report.
+
 ### Omarchy wrapper
 
 Trusted but hosted in the same unsandboxed `omarchy-shell` process as enabled
@@ -91,7 +97,7 @@ payload before disclosure.
 | Arbitrary file read | Empty filesystem view; only target is read-only mounted |
 | Host modification | Dedicated output and temporary areas; read-only runtime; no session sockets |
 | Network access | Private network namespace with no shared host network |
-| Path escape | Canonical broker resolution; mount boundary; no symlink following; bounded traversal |
+| Path escape | `openat2` beneath pinned roots; mount boundary; no symlink following; descriptor-rooted bounded traversal |
 | Parser denial of service | File/depth/byte/output limits; verified systemd memory/swap/task/CPU scope; independent wall timeout; core/file-descriptor rlimits |
 | Report injection | Strict JSON schema; plain-text renderer; control-character normalization |
 | False reassurance | Explicit limitations; no safe verdict or opaque score |
@@ -101,6 +107,9 @@ payload before disclosure.
 ## Residual risks
 
 - Scanner or kernel vulnerabilities may escape containment.
+- Target mutation is detected around file reads and directory traversal, but
+  this is not an atomic filesystem snapshot; a complete change-and-revert
+  between metadata observations remains outside the guarantee.
 - The target bind is read-only but not proven `noexec`; containment does not
   replace the scanner's invariant that target content is never passed to an
   execution API.
@@ -109,5 +118,7 @@ payload before disclosure.
 - Binary inventory cannot establish what a native helper will do at runtime.
 - An enabled malicious plugin already has user-session authority before review.
 - A compromised build/release channel can replace the reviewer itself.
+- Root, kernel, package-manager, or systemd-manager compromise can replace
+  trusted installed components and is outside the plugin attacker model.
 
 These risks must remain visible in user-facing reports and release documentation.

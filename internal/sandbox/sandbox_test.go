@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
 )
 
 func TestArgumentsKeepNetworkAndHostFilesystemUnshared(t *testing.T) {
@@ -58,6 +60,40 @@ func TestOpenPinnedRejectsEndpointSymlink(t *testing.T) {
 	}
 }
 
+func TestOpenPinnedRejectsIntermediateSymlink(t *testing.T) {
+	realDirectory := t.TempDir()
+	file := filepath.Join(realDirectory, "scanner")
+	if err := os.WriteFile(file, []byte("data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkedDirectory := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(realDirectory, linkedDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openPinned(filepath.Join(linkedDirectory, "scanner"), false); err == nil {
+		t.Fatal("openPinned accepted an intermediate symlink")
+	}
+}
+
+func TestProductionRunnerRejectsUserOwnedScanner(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("user-ownership rejection requires an unprivileged test user")
+	}
+	probe := filepath.Join(t.TempDir(), "scanner")
+	data, err := os.ReadFile("/usr/bin/true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(probe, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := probeTarget(t)
+	runner := Runner{Bubblewrap: "/usr/bin/bwrap", Timeout: time.Second}
+	if _, err := runner.Run(context.Background(), probe, target, "untrusted"); err == nil || !strings.Contains(err.Error(), "expected 0") {
+		t.Fatalf("untrusted scanner result = %v", err)
+	}
+}
+
 func TestRequireStaticELFRejectsNonELF(t *testing.T) {
 	name := filepath.Join(t.TempDir(), "scanner")
 	if err := os.WriteFile(name, []byte("#!/bin/sh\n"), 0o700); err != nil {
@@ -90,8 +126,13 @@ func TestBubblewrapIsolation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "manifest.json"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runner := Runner{Bubblewrap: bwrap, Timeout: 5 * time.Second}
-	output, err := runner.Run(context.Background(), probe, target, "org.example.probe")
+	targetFile, err := os.Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetFile.Close()
+	runner := Runner{Bubblewrap: bwrap, Timeout: 5 * time.Second, AllowDevelopmentScanner: true}
+	output, err := runner.Run(context.Background(), probe, targetFile, "org.example.probe")
 	if err != nil {
 		t.Fatalf("run sandbox probe: %v", err)
 	}
@@ -99,7 +140,7 @@ func TestBubblewrapIsolation(t *testing.T) {
 	if err := json.Unmarshal(output, &result); err != nil {
 		t.Fatalf("decode probe output: %v: %q", err, output)
 	}
-	for _, denied := range []string{"readHostEtc", "readHostHome", "writeTarget", "network", "seeHostProc", "seeSessionSocket", "nestedUserNamespace"} {
+	for _, denied := range []string{"readHostEtc", "readHostHome", "writeTarget", "network", "seeHostProc", "seeSessionSocket", "nestedUserNamespace", "cgroupMigration"} {
 		if result[denied] {
 			t.Errorf("sandbox unexpectedly permitted %s", denied)
 		}
@@ -109,10 +150,38 @@ func TestBubblewrapIsolation(t *testing.T) {
 	}
 }
 
+func TestBubblewrapBoundsDescendantHoldingOutputDescriptors(t *testing.T) {
+	bwrap, probe := trustedProbe(t)
+	target := probeTarget(t)
+	runner := Runner{Bubblewrap: bwrap, Timeout: 150 * time.Millisecond, AllowDevelopmentScanner: true}
+	started := time.Now()
+	_, err := runner.Run(context.Background(), probe, target, "descendant")
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("descendant timeout result = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > runner.Timeout+policy.ProcessWaitDelay+time.Second {
+		t.Fatalf("descendant holding pipes delayed teardown for %s", elapsed)
+	}
+}
+
+func TestBubblewrapBoundsSimultaneousStdoutAndStderrExhaustion(t *testing.T) {
+	bwrap, probe := trustedProbe(t)
+	target := probeTarget(t)
+	runner := Runner{Bubblewrap: bwrap, Timeout: 5 * time.Second, AllowDevelopmentScanner: true}
+	started := time.Now()
+	_, err := runner.Run(context.Background(), probe, target, "both-output")
+	if err == nil || !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("simultaneous output result = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > policy.ProcessWaitDelay+time.Second {
+		t.Fatalf("simultaneous output teardown took %s", elapsed)
+	}
+}
+
 func TestBubblewrapWallClockTimeout(t *testing.T) {
 	bwrap, probe := trustedProbe(t)
 	target := probeTarget(t)
-	runner := Runner{Bubblewrap: bwrap, Timeout: 100 * time.Millisecond}
+	runner := Runner{Bubblewrap: bwrap, Timeout: 100 * time.Millisecond, AllowDevelopmentScanner: true}
 	_, err := runner.Run(context.Background(), probe, target, "timeout")
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("timeout result = %v", err)
@@ -122,7 +191,7 @@ func TestBubblewrapWallClockTimeout(t *testing.T) {
 func TestBubblewrapRejectsOversizedOutput(t *testing.T) {
 	bwrap, probe := trustedProbe(t)
 	target := probeTarget(t)
-	runner := Runner{Bubblewrap: bwrap, Timeout: 5 * time.Second}
+	runner := Runner{Bubblewrap: bwrap, Timeout: 5 * time.Second, AllowDevelopmentScanner: true}
 	_, err := runner.Run(context.Background(), probe, target, "output")
 	if err == nil || !strings.Contains(err.Error(), "output exceeded") {
 		t.Fatalf("oversized output result = %v", err)
@@ -148,11 +217,16 @@ func trustedProbe(t *testing.T) (string, string) {
 	return bwrap, probe
 }
 
-func probeTarget(t *testing.T) string {
+func probeTarget(t *testing.T) *os.File {
 	t.Helper()
 	target := t.TempDir()
 	if err := os.WriteFile(filepath.Join(target, "manifest.json"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return target
+	file, err := os.Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	return file
 }

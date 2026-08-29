@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -24,6 +27,32 @@ func main() {
 		_, _ = os.Stdout.Write(make([]byte, 17<<20))
 		return
 	}
+	if *displayName == "both-output" {
+		done := make(chan struct{}, 2)
+		go func() { _, _ = os.Stdout.Write(make([]byte, 17<<20)); done <- struct{}{} }()
+		go func() { _, _ = os.Stderr.Write(make([]byte, 1<<20)); done <- struct{}{} }()
+		<-done
+		<-done
+		return
+	}
+	if *displayName == "descendant-child" {
+		signal.Ignore(syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+		_, _ = fmt.Fprintf(os.Stderr, "descendant=%d\n", os.Getpid())
+		for {
+			time.Sleep(time.Second)
+		}
+	}
+	if *displayName == "descendant" {
+		child := exec.Command("/app/plug-prejudice", "--target", "/target", "--display-name", "descendant-child", "--sandboxed", "--resource-limited")
+		child.Stdin = os.Stdin
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			panic(err)
+		}
+		time.Sleep(10 * time.Second)
+		return
+	}
 	result := map[string]bool{
 		"readHostEtc":         canRead("/etc/passwd"),
 		"readHostHome":        canRead("/home"),
@@ -34,9 +63,14 @@ func main() {
 		"seeHostProc":         canRead("/proc/1/status"),
 		"seeSessionSocket":    canRead(fmt.Sprintf("/run/user/%d/bus", os.Getuid())) || canRead("/tmp/.X11-unix"),
 		"nestedUserNamespace": canCreateUserNamespace(),
+		"cgroupMigration":     canMigrateCgroup(),
 		"environmentMinimal":  minimalEnvironment(),
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(result)
+}
+
+func canMigrateCgroup() bool {
+	return os.WriteFile("/sys/fs/cgroup/cgroup.procs", []byte(strconv.Itoa(os.Getpid())), 0o600) == nil
 }
 
 func canCreateUserNamespace() bool {

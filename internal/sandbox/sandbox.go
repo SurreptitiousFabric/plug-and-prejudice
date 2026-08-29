@@ -11,10 +11,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/trustedexec"
+	"golang.org/x/sys/unix"
 )
 
 const bubblewrapPath = "/usr/bin/bwrap"
@@ -25,8 +27,9 @@ const (
 )
 
 type Runner struct {
-	Bubblewrap string
-	Timeout    time.Duration
+	Bubblewrap              string
+	Timeout                 time.Duration
+	AllowDevelopmentScanner bool
 }
 
 func DefaultRunner() (Runner, error) {
@@ -38,7 +41,7 @@ func DefaultRunner() (Runner, error) {
 	return Runner{Bubblewrap: bubblewrapPath, Timeout: policy.WallTime}, nil
 }
 
-func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName string) ([]byte, error) {
+func (r Runner) Run(ctx context.Context, scannerPath string, target *os.File, displayName string) ([]byte, error) {
 	if r.Bubblewrap == "" {
 		return nil, errors.New("bubblewrap path is empty")
 	}
@@ -48,19 +51,35 @@ func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName st
 	if !validDisplayName(displayName) {
 		return nil, errors.New("sandbox display name is invalid")
 	}
-	scanner, err := openPinned(scannerPath, false)
-	if err != nil {
-		return nil, fmt.Errorf("pin scanner: %w", err)
+	var scanner *os.File
+	var trustedScanner *trustedexec.Executable
+	var err error
+	if r.AllowDevelopmentScanner {
+		scanner, err = openPinned(scannerPath, false)
+	} else {
+		trustedScanner, err = trustedexec.Open(scannerPath)
+		if err == nil {
+			scanner = trustedScanner.File()
+		}
 	}
-	defer scanner.Close()
+	if err != nil {
+		return nil, fmt.Errorf("pin trusted scanner: %w", err)
+	}
+	if trustedScanner != nil {
+		defer trustedScanner.Close()
+	} else {
+		defer scanner.Close()
+	}
 	if err := requireStaticELF(scanner); err != nil {
 		return nil, fmt.Errorf("validate scanner executable: %w", err)
 	}
-	target, err := openPinned(targetPath, true)
-	if err != nil {
-		return nil, fmt.Errorf("pin target: %w", err)
+	if target == nil {
+		return nil, errors.New("pinned target descriptor is required")
 	}
-	defer target.Close()
+	targetInfo, err := target.Stat()
+	if err != nil || !targetInfo.IsDir() {
+		return nil, errors.New("pinned target descriptor is not a directory")
+	}
 
 	timed, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
@@ -74,6 +93,7 @@ func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName st
 		return nil, err
 	}
 	cmd := exec.CommandContext(timed, procPath, args...)
+	cmd.WaitDelay = policy.ProcessWaitDelay
 	cmd.ExtraFiles = []*os.File{scanner, target}
 	cmd.Env = []string{}
 	stdout, err := cmd.StdoutPipe()
@@ -199,30 +219,27 @@ func openPinned(name string, wantDirectory bool) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	linked, err := os.Lstat(clean)
+	flags := uint64(unix.O_RDONLY | unix.O_CLOEXEC)
+	if wantDirectory {
+		flags |= unix.O_DIRECTORY
+	}
+	fd, err := unix.Openat2(unix.AT_FDCWD, clean, &unix.OpenHow{
+		Flags:   flags,
+		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if linked.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("symbolic-link endpoints are not allowed")
-	}
-	if wantDirectory != linked.IsDir() {
-		if wantDirectory {
-			return nil, errors.New("target is not a directory")
-		}
-		return nil, errors.New("scanner is not a regular file")
-	}
-	if !wantDirectory && !linked.Mode().IsRegular() {
-		return nil, errors.New("scanner is not a regular file")
-	}
-	f, err := os.Open(clean)
-	if err != nil {
-		return nil, err
-	}
+	f := os.NewFile(uintptr(fd), clean)
 	opened, err := f.Stat()
-	if err != nil || !os.SameFile(linked, opened) {
+	if err != nil {
 		_ = f.Close()
-		return nil, errors.New("path identity changed while being opened")
+		return nil, err
+	}
+	stat, ok := opened.Sys().(*syscall.Stat_t)
+	if !ok || stat.Nlink == 0 || wantDirectory != opened.IsDir() || (!wantDirectory && !opened.Mode().IsRegular()) {
+		_ = f.Close()
+		return nil, errors.New("opened descriptor has unexpected type or identity")
 	}
 	return f, nil
 }

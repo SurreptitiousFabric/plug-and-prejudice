@@ -26,10 +26,12 @@ sets:
 
 The scoped broker reads its unified cgroup-v2 path from `/proc/self/cgroup` and
 directly verifies `memory.max`, `memory.swap.max`, `pids.max`, and `cpu.max` are
-at least as strict as policy. It then lowers `RLIMIT_CORE` to zero and
+at least as strict as policy. Through the pinned `/usr/bin/systemctl` inode it
+also queries the exact randomized unit and rejects a missing, unlimited, or
+weaker `RuntimeMaxUSec`. It then lowers `RLIMIT_CORE` to zero and
 `RLIMIT_NOFILE` to at most 256. Only after those checks does it resolve the
 installed plugin and open the target/scanner descriptors for Bubblewrap.
-The broker opens fixed `/usr/bin/systemd-run` and `/usr/bin/bwrap` paths with
+The broker opens fixed `/usr/bin/systemd-run`, `/usr/bin/systemctl`, and `/usr/bin/bwrap` paths with
 Linux `openat2`, rejecting symlinks and magic links, then verifies each pinned
 descriptor is a root-owned, executable, non-group/world-writable ELF regular file.
 Execution uses `/proc/self/fd/N`, which Linux resolves to that open inode during
@@ -40,6 +42,13 @@ trusted broker. Inherited `PATH` is never used to choose either executable.
 Bubblewrap retains the independent 30-second context deadline. The extra five
 seconds on the outer scope allow ordinary broker validation and teardown while
 still bounding failures outside the child timeout.
+
+Go subprocess waiting uses a two-second `WaitDelay` so descendants retaining
+stdout or stderr cannot hold the scoped broker indefinitely. When that broker
+exits, the outer process uses the trusted systemd interface to send SIGKILL to
+all remaining processes in the exact scope under a three-second deadline.
+The verified scope runtime remains the final independent bound if inner cleanup
+does not cooperate.
 
 The report records the exact enforced policy. The trusted broker rejects a
 scanner report whose resource metadata differs from its compiled policy.
@@ -68,6 +77,8 @@ process memory outside the intended output path.
   the broker before descriptors are opened avoids it.
 - Giving Bubblewrap access to the user systemd bus would violate the sandbox's
   session isolation.
+- Killing only Bubblewrap cannot prove descendant teardown when a hostile child
+  retains pipes; the outer broker therefore cleans the authoritative scope.
 
 ## Consequences and residual risk
 

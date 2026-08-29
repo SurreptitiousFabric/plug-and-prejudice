@@ -12,15 +12,18 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/trustedexec"
 )
 
 const systemdRunPath = "/usr/bin/systemd-run"
+const systemctlPath = "/usr/bin/systemctl"
 
 type Manager struct {
 	SystemdRun string
+	Systemctl  string
 	CgroupRoot string
 	ProcCgroup string
 }
@@ -31,7 +34,12 @@ func DefaultManager() (Manager, error) {
 		return Manager{}, fmt.Errorf("trusted systemd-run is required; refusing to scan without resource containment: %w", err)
 	}
 	defer systemdRun.Close()
-	return Manager{SystemdRun: systemdRunPath, CgroupRoot: "/sys/fs/cgroup", ProcCgroup: "/proc/self/cgroup"}, nil
+	systemctl, err := trustedexec.Open(systemctlPath)
+	if err != nil {
+		return Manager{}, fmt.Errorf("trusted systemctl is required; refusing to scan without runtime verification: %w", err)
+	}
+	defer systemctl.Close()
+	return Manager{SystemdRun: systemdRunPath, Systemctl: systemctlPath, CgroupRoot: "/sys/fs/cgroup", ProcCgroup: "/proc/self/cgroup"}, nil
 }
 
 func NewUnitName() (string, error) {
@@ -58,12 +66,23 @@ func (m Manager) Run(ctx context.Context, unit, executable string, arguments []s
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, procPath, args...)
+	timed, cancel := context.WithTimeout(ctx, policy.ScopeRuntime+policy.TeardownTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(timed, procPath, args...)
+	cmd.WaitDelay = policy.ProcessWaitDelay
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
-	return cmd.Run()
+	runErr := cmd.Run()
+	teardownErr := m.Terminate(context.Background(), unit)
+	if runErr != nil {
+		if teardownErr != nil {
+			return errors.Join(runErr, teardownErr)
+		}
+		return runErr
+	}
+	return teardownErr
 }
 
 func Arguments(unit, executable string, arguments []string) []string {
@@ -135,6 +154,66 @@ func (m Manager) Verify(unit string) error {
 		return fmt.Errorf("cpu.max exceeds %d%%: %q", policy.CPUQuotaPercent, strings.TrimSpace(string(cpu)))
 	}
 	return nil
+}
+
+func (m Manager) VerifyRuntime(ctx context.Context, unit string) error {
+	if !validUnitName(unit) {
+		return errors.New("resource scope unit name is invalid")
+	}
+	output, err := m.systemctl(ctx, "show", unit, "--property=RuntimeMaxUSec", "--value", "--no-pager")
+	if err != nil {
+		return fmt.Errorf("query live scope lifetime: %w", err)
+	}
+	if len(output) > 128 {
+		return errors.New("live scope lifetime response exceeds limit")
+	}
+	return verifyRuntimeMax(string(output))
+}
+
+func verifyRuntimeMax(value string) error {
+	text := strings.TrimSpace(value)
+	duration, err := time.ParseDuration(text)
+	if err != nil || duration <= 0 || duration > policy.ScopeRuntime {
+		return fmt.Errorf("RuntimeMaxUSec is %q, expected at most %s", text, policy.ScopeRuntime)
+	}
+	return nil
+}
+
+func (m Manager) Terminate(ctx context.Context, unit string) error {
+	if !validUnitName(unit) {
+		return errors.New("resource scope unit name is invalid")
+	}
+	timed, cancel := context.WithTimeout(ctx, policy.TeardownTimeout)
+	defer cancel()
+	_, err := m.systemctl(timed, "kill", unit, "--kill-whom=all", "--signal=KILL", "--no-block")
+	if err == nil {
+		return nil
+	}
+	// A collected scope with no remaining processes is already safely empty.
+	state, showErr := m.systemctl(timed, "show", unit, "--property=ActiveState", "--value", "--no-pager")
+	if showErr == nil && strings.TrimSpace(string(state)) == "inactive" {
+		return nil
+	}
+	return fmt.Errorf("terminate resource scope: %w", err)
+}
+
+func (m Manager) systemctl(ctx context.Context, arguments ...string) ([]byte, error) {
+	if m.Systemctl == "" {
+		return nil, errors.New("systemctl path is empty")
+	}
+	systemctl, err := trustedexec.Open(m.Systemctl)
+	if err != nil {
+		return nil, fmt.Errorf("pin systemctl: %w", err)
+	}
+	defer systemctl.Close()
+	procPath, args, err := systemctl.CommandPath(append([]string{"--user"}, arguments...)...)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, procPath, args...)
+	cmd.WaitDelay = policy.ProcessWaitDelay
+	cmd.Env = os.Environ()
+	return cmd.Output()
 }
 
 func ApplyProcessLimits() error {

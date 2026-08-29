@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,58 @@ import (
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
 )
+
+func TestScanFailsClosedWhenFileMutatesDuringRead(t *testing.T) {
+	target := t.TempDir()
+	file := filepath.Join(target, "mutable.js")
+	mustWrite(t, file, "const value = 'before';")
+	_, err := scan(target, DefaultLimits(), func(event, filePath string) {
+		if event == "file-read" && filePath == "mutable.js" {
+			mustWrite(t, file, "const value = 'after!';")
+		}
+	})
+	if !errors.Is(err, ErrTargetChanged) {
+		t.Fatalf("mutation result = %v, want ErrTargetChanged", err)
+	}
+}
+
+func TestScanFailsClosedWhenPinnedFilePathIsReplaced(t *testing.T) {
+	target := t.TempDir()
+	file := filepath.Join(target, "mutable.js")
+	mustWrite(t, file, "original")
+	_, err := scan(target, DefaultLimits(), func(event, filePath string) {
+		if event == "file-opened" && filePath == "mutable.js" {
+			replacement := filepath.Join(target, "replacement")
+			mustWrite(t, replacement, "replacement")
+			if renameErr := os.Rename(replacement, file); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+		}
+	})
+	if !errors.Is(err, ErrTargetChanged) {
+		t.Fatalf("replacement result = %v, want ErrTargetChanged", err)
+	}
+}
+
+func TestScanFailsClosedWhenIntermediateDirectoryIsReplaced(t *testing.T) {
+	target := t.TempDir()
+	directory := filepath.Join(target, "nested")
+	mustWrite(t, filepath.Join(directory, "file"), "original")
+	_, err := scan(target, DefaultLimits(), func(event, filePath string) {
+		if event == "directory-opened" && filePath == "nested" {
+			moved := filepath.Join(target, "moved")
+			if renameErr := os.Rename(directory, moved); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+			if mkdirErr := os.Mkdir(directory, 0o700); mkdirErr != nil {
+				t.Fatal(mkdirErr)
+			}
+		}
+	})
+	if !errors.Is(err, ErrTargetChanged) {
+		t.Fatalf("directory replacement result = %v, want ErrTargetChanged", err)
+	}
+}
 
 func TestScanInventoriesRegularFilesWithoutFollowingSymlinks(t *testing.T) {
 	target := t.TempDir()
