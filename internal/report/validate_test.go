@@ -28,7 +28,40 @@ func buildTestEvidence(t *testing.T, r *Report) {
 			r.Findings[index].Provenance = testProvenance
 		}
 	}
+	paths := map[string]bool{}
+	for _, file := range r.Inventory {
+		paths[file.Path] = true
+	}
+	add := func(e Evidence) {
+		if e.Path != "" && !paths[e.Path] && !strings.HasPrefix(e.Path, "../") {
+			r.Inventory = append(r.Inventory, File{Path: e.Path, Kind: "regular", Mode: "-rw-r--r--", Size: 0, Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "text/plain", Analysis: AnalysisAnalyzed})
+			paths[e.Path] = true
+		}
+	}
+	for _, item := range r.Operations {
+		add(item.Evidence)
+	}
+	for _, item := range r.Resources {
+		add(item.Evidence)
+	}
+	for _, item := range r.Findings {
+		for _, evidence := range item.Evidence {
+			add(evidence)
+		}
+	}
+	for _, item := range r.Unknowns {
+		for _, evidence := range item.Evidence {
+			add(evidence)
+		}
+		for _, origin := range item.Origins {
+			add(origin.Evidence)
+		}
+	}
+	r.Target.FileCount = len(r.Inventory)
 	if err := r.BuildEvidenceGraph(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.BuildReviewSummary(coverageFromInventory(r.Inventory)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -57,13 +90,42 @@ func validReport() Report {
 		Status:        StatusComplete,
 		Scan: ScanMetadata{ScannerVersion: "test", PolicyVersion: "test", StartedAt: now, CompletedAt: now, Sandboxed: true,
 			ResourceLimits: &ResourceLimits{MemoryMaxBytes: 256 << 20, TasksMax: 64, CPUQuotaPercent: 100, WallTimeSeconds: 30}},
-		Target:    Target{DisplayName: "example"},
-		Inventory: []File{}, Operations: []Operation{}, Resources: []Resource{}, Findings: []Finding{}, Unknowns: []Unknown{}, Relationships: []Relationship{}, Limitations: []Limitation{}, Errors: []ScanError{},
+		Target:         Target{DisplayName: "example"},
+		EvidenceInputs: []EvidenceInput{{ID: TargetEvidenceInputID, Type: EvidenceInputTarget, Label: "test target", Format: "plug-prejudice-inventory", Version: SchemaVersion}},
+		Inventory:      []File{}, Operations: []Operation{}, Resources: []Resource{}, Findings: []Finding{}, Unknowns: []Unknown{}, Relationships: []Relationship{}, Limitations: []Limitation{}, Errors: []ScanError{},
 	}
 	if err := r.BuildReviewSummary(NewCoverageSummary(0, 0, 0)); err != nil {
 		panic(err)
 	}
 	return r
+}
+
+func finalizeNativeArtifactReport(r *Report) {
+	r.Status = StatusIncomplete
+	r.Unknowns = []Unknown{}
+	for index := range r.Inventory {
+		if r.Inventory[index].ContentType != "application/x-elf" {
+			continue
+		}
+		r.Inventory[index].Analysis, r.Inventory[index].AnalysisReason = AnalysisPartial, "bounded ELF metadata cannot establish native behavior"
+		evidence := Evidence{Path: r.Inventory[index].Path}
+		r.Unknowns = append(r.Unknowns, Unknown{ID: fmt.Sprintf("unknown-native-test-%d", index), Category: "native-behavior", Reason: UnknownNativeBehavior, Scope: ScopeRuntime, Confidence: ConfidenceHigh, Title: "Native behavior unresolved", Description: "Metadata inspection is not complete native semantic analysis.", Evidence: []Evidence{evidence}, Origins: []ValueOrigin{}, AffectedOperations: []string{}, SuppressedRules: []string{}, Provenance: testProvenance})
+	}
+	if err := r.BuildEvidenceGraph(); err != nil {
+		panic(err)
+	}
+	if err := r.BuildReviewSummary(coverageFromInventory(r.Inventory)); err != nil {
+		panic(err)
+	}
+}
+
+func finalizeArchiveArtifactReport(r *Report) {
+	r.Status = StatusIncomplete
+	r.Inventory[0].Analysis, r.Inventory[0].AnalysisReason = AnalysisPartial, "bounded archive inventory is not semantic payload analysis"
+	r.Limitations = []Limitation{{Code: "archive-semantic-analysis-unavailable", Description: "Archive contents were inventoried but not semantically analyzed.", Path: r.Inventory[0].Path, Scope: ScopeUnknown}}
+	if err := r.BuildReviewSummary(coverageFromInventory(r.Inventory)); err != nil {
+		panic(err)
+	}
 }
 
 func TestDecodeAcceptsValidReport(t *testing.T) {
@@ -101,6 +163,9 @@ func TestValidateRejectsBrokenRelationshipsAndUnsafeEvidence(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 	r.Findings[0].Evidence[0].Path = "plugin.sh"
+	r.Inventory = []File{{Path: "plugin.sh", Kind: "regular", Mode: "-rw-r--r--", Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "text/plain", Analysis: AnalysisAnalyzed}}
+	r.Target.FileCount = 1
+	_ = r.BuildReviewSummary(coverageFromInventory(r.Inventory))
 	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "missing operation") {
 		t.Fatalf("Validate() error = %v", err)
 	}
@@ -183,6 +248,7 @@ func TestValidateRequiresCanonicalRootDigestWhenPresent(t *testing.T) {
 	}
 	r := validReport()
 	r.Target.RootDigest = strings.Repeat("a", 64)
+	r.EvidenceInputs[0].Digest = r.Target.RootDigest
 	if err := r.Validate(); err != nil {
 		t.Fatalf("canonical root digest was rejected: %v", err)
 	}
@@ -336,9 +402,7 @@ func TestDedicatedUnknownValidatesAndExplainsIncompleteStatus(t *testing.T) {
 		Title: "Executable unresolved", Description: "The helper is selected at runtime.", Evidence: []Evidence{evidence},
 		Origins: []ValueOrigin{{Kind: OriginParameterExpansion, Name: "helper", Evidence: evidence}}, AffectedOperations: []string{"op-dynamic"},
 		SuppressedRules: []string{"command-capability/v1"}, Provenance: testProvenance}}
-	if err := r.BuildEvidenceGraph(); err != nil {
-		t.Fatal(err)
-	}
+	buildTestEvidence(t, &r)
 	if err := r.Validate(); err != nil {
 		t.Fatalf("traceable dedicated unknown was rejected: %v", err)
 	}
@@ -412,7 +476,7 @@ func TestValidateReconcilesInspectedByteTotals(t *testing.T) {
 		{Path: "plugin.sh", Kind: "regular", Mode: "-rw-r--r--", Size: 7, Inspected: true, SHA256: digest, ContentType: "text/plain", Analysis: AnalysisAnalyzed},
 		{Path: "helper", Kind: "regular", Mode: "-rwxr-xr-x", Size: 11, Inspected: true, SHA256: digest, ContentType: "application/x-elf", Analysis: AnalysisAnalyzed},
 	}
-	_ = valid.BuildReviewSummary(NewCoverageSummary(2, 0, 0))
+	finalizeNativeArtifactReport(&valid)
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("matching byte totals were rejected: %v", err)
 	}
@@ -474,7 +538,7 @@ func TestValidateRequiresCompleteParsedELFMetadata(t *testing.T) {
 		SHA256: digest, ContentType: "application/x-elf", Analysis: AnalysisAnalyzed,
 		Binary: &Binary{Format: "ELF", Class: "ELFCLASS64", ByteOrder: "ELFDATA2LSB", Machine: "EM_AARCH64", Type: "ET_DYN", Libraries: []string{}, ImportedSymbols: []string{}, ExtractedStrings: []string{}, EmbeddedURLs: []string{}, FileCapabilities: []string{}},
 	}}
-	_ = valid.BuildReviewSummary(NewCoverageSummary(1, 0, 0))
+	finalizeNativeArtifactReport(&valid)
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("complete ELF metadata was rejected: %v", err)
 	}
@@ -508,7 +572,7 @@ func TestValidateELFNestedCollectionLimits(t *testing.T) {
 		r.Target.FileCount, r.Target.BinaryBytes = 1, 10
 		r.Inventory = []File{{Path: "helper", Kind: "regular", Mode: "-rwxr-xr-x", Size: 10, Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "application/x-elf", Analysis: AnalysisAnalyzed,
 			Binary: &Binary{Format: "ELF", Class: "ELFCLASS64", ByteOrder: "ELFDATA2LSB", Machine: "EM_AARCH64", Type: "ET_DYN", Libraries: []string{}, ImportedSymbols: []string{}, ExtractedStrings: []string{}, EmbeddedURLs: []string{}, FileCapabilities: []string{}}}}
-		_ = r.BuildReviewSummary(NewCoverageSummary(1, 0, 0))
+		finalizeNativeArtifactReport(&r)
 		return r
 	}
 	tests := []struct {
@@ -552,7 +616,7 @@ func TestValidateImportedLibraryLimitExactAndFirstOver(t *testing.T) {
 			SHA256: strings.Repeat("a", 64), ContentType: "application/x-elf", Analysis: AnalysisAnalyzed,
 			Binary: &Binary{Format: "ELF", Class: "ELFCLASS64", ByteOrder: "ELFDATA2LSB", Machine: "EM_AARCH64", Type: "ET_DYN", Libraries: make([]string, count), ImportedSymbols: []string{}, ExtractedStrings: []string{}, EmbeddedURLs: []string{}, FileCapabilities: []string{}},
 		}}
-		_ = r.BuildReviewSummary(NewCoverageSummary(1, 0, 0))
+		finalizeNativeArtifactReport(&r)
 		for index := range r.Inventory[0].Binary.Libraries {
 			r.Inventory[0].Binary.Libraries[index] = fmt.Sprintf("lib-%d.so", index)
 		}
@@ -579,7 +643,7 @@ func TestValidateArchiveMetadataAndNestedLimits(t *testing.T) {
 			Path: "payload.zip", Kind: "regular", Mode: "-rw-------", Size: 10, Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "application/zip", Analysis: AnalysisAnalyzed,
 			Archive: &Archive{Format: "zip", Entries: entries, InventoryComplete: count <= MaxArchiveEntries, RetainedUncompressedBytes: int64(count)},
 		}}
-		_ = r.BuildReviewSummary(NewCoverageSummary(1, 0, 0))
+		finalizeArchiveArtifactReport(&r)
 		return r
 	}
 	if err := makeReport(MaxArchiveEntries).Validate(); err != nil {

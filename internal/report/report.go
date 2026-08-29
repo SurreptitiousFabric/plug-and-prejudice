@@ -9,32 +9,35 @@ const SchemaVersion = "2.0.0"
 // derived collections allow multiple observations per file without accepting
 // an effectively unbounded graph from a compromised producer.
 const (
-	MaxInventoryEntries    = 10_000
-	MaxOperationEntries    = 20_000
-	MaxResourceEntries     = 20_000
-	MaxFindingEntries      = 20_000
-	MaxUnknownEntries      = 20_000
-	MaxLimitationEntries   = 20_000
-	MaxErrorEntries        = 10_000
-	MaxOperationArguments  = 1_024
-	MaxManifestKinds       = 128
-	MaxManifestEntryPoints = 128
-	MaxImportedLibraries   = 1_024
-	MaxImportedSymbols     = 1_024
-	MaxExtractedStrings    = 256
-	MaxEmbeddedURLs        = 128
-	MaxFileCapabilities    = 64
-	MaxArchiveEntries      = 4_096
-	MaxFindingEvidence     = 8
-	MaxFindingRelated      = 16
-	MaxUnknownEvidence     = 8
-	MaxUnknownAffected     = 16
-	MaxUnknownOrigins      = 8
-	MaxUnknownSuppressed   = 16
-	MaxEvidenceRelations   = MaxResourceEntries + (MaxFindingEntries+MaxUnknownEntries)*MaxFindingRelated
-	MaxHostileStringBytes  = 4 << 10
-	MaxEncodedReportBytes  = 16 << 20
-	MaxJSONDepth           = 64
+	MaxInventoryEntries          = 10_000
+	MaxOperationEntries          = 20_000
+	MaxResourceEntries           = 20_000
+	MaxFindingEntries            = 20_000
+	MaxUnknownEntries            = 20_000
+	MaxLimitationEntries         = 20_000
+	MaxErrorEntries              = 10_000
+	MaxOperationArguments        = 1_024
+	MaxManifestKinds             = 128
+	MaxManifestEntryPoints       = 128
+	MaxImportedLibraries         = 1_024
+	MaxImportedSymbols           = 1_024
+	MaxExtractedStrings          = 256
+	MaxEmbeddedURLs              = 128
+	MaxFileCapabilities          = 64
+	MaxArchiveEntries            = 4_096
+	MaxFindingEvidence           = 8
+	MaxFindingRelated            = 16
+	MaxUnknownEvidence           = 8
+	MaxUnknownAffected           = 16
+	MaxUnknownOrigins            = 8
+	MaxUnknownSuppressed         = 16
+	MaxComparisonRelations       = 20_000
+	MaxEvidenceInputs            = 16
+	MaxEvidenceRelations         = MaxResourceEntries + MaxFindingEntries*MaxFindingRelated + MaxUnknownEntries*MaxUnknownAffected + MaxComparisonRelations
+	MaxProducedEvidenceRelations = 20_000
+	MaxHostileStringBytes        = 4 << 10
+	MaxEncodedReportBytes        = 16 << 20
+	MaxJSONDepth                 = 64
 )
 
 type ClaimType string
@@ -79,19 +82,20 @@ const (
 )
 
 type Report struct {
-	SchemaVersion string         `json:"schemaVersion"`
-	Status        Status         `json:"status"`
-	Scan          ScanMetadata   `json:"scan"`
-	Target        Target         `json:"target"`
-	Review        *ReviewSummary `json:"review"`
-	Inventory     []File         `json:"inventory"`
-	Operations    []Operation    `json:"operations"`
-	Resources     []Resource     `json:"resources"`
-	Findings      []Finding      `json:"findings"`
-	Unknowns      []Unknown      `json:"unknowns"`
-	Relationships []Relationship `json:"relationships"`
-	Limitations   []Limitation   `json:"limitations"`
-	Errors        []ScanError    `json:"errors"`
+	SchemaVersion  string          `json:"schemaVersion"`
+	Status         Status          `json:"status"`
+	Scan           ScanMetadata    `json:"scan"`
+	Target         Target          `json:"target"`
+	EvidenceInputs []EvidenceInput `json:"evidenceInputs"`
+	Review         *ReviewSummary  `json:"review"`
+	Inventory      []File          `json:"inventory"`
+	Operations     []Operation     `json:"operations"`
+	Resources      []Resource      `json:"resources"`
+	Findings       []Finding       `json:"findings"`
+	Unknowns       []Unknown       `json:"unknowns"`
+	Relationships  []Relationship  `json:"relationships"`
+	Limitations    []Limitation    `json:"limitations"`
+	Errors         []ScanError     `json:"errors"`
 }
 
 const CoverageDenominator = "retained supported executable, configuration, archive, and binary artifact files"
@@ -127,7 +131,9 @@ type CoverageSummary struct {
 	AnalyzedUnits   int    `json:"analyzedUnits"`
 	PartialUnits    int    `json:"partialUnits"`
 	UnanalyzedUnits int    `json:"unanalyzedUnits"`
+	ExcludedUnits   int    `json:"excludedUnits"`
 	TotalUnits      int    `json:"totalUnits"`
+	RetainedUnits   int    `json:"retainedUnits"`
 	Percentage      *int   `json:"percentage"`
 }
 type UnknownSummary struct {
@@ -362,20 +368,44 @@ const (
 )
 
 type Relationship struct {
-	ID       string           `json:"id"`
-	Type     RelationshipType `json:"type"`
-	FromKind NodeKind         `json:"fromKind"`
-	From     string           `json:"from"`
-	ToKind   NodeKind         `json:"toKind"`
-	To       string           `json:"to"`
+	ID         string           `json:"id"`
+	Type       RelationshipType `json:"type"`
+	FromKind   NodeKind         `json:"fromKind"`
+	From       string           `json:"from"`
+	ToKind     NodeKind         `json:"toKind"`
+	To         string           `json:"to"`
+	Comparison *ComparisonBasis `json:"comparison,omitempty"`
 }
 
 type Evidence struct {
+	InputID   string `json:"inputId"`
 	Path      string `json:"path"`
 	LineStart int    `json:"lineStart,omitempty"`
 	LineEnd   int    `json:"lineEnd,omitempty"`
 	Operation string `json:"operation,omitempty"`
 	Excerpt   string `json:"excerpt,omitempty"`
+}
+
+type EvidenceInputType string
+
+const (
+	EvidenceInputTarget       EvidenceInputType = "target-inventory"
+	EvidenceInputOmarchyAudit EvidenceInputType = "omarchy-audit"
+	TargetEvidenceInputID                       = "input-target"
+)
+
+type EvidenceInput struct {
+	ID      string            `json:"id"`
+	Type    EvidenceInputType `json:"type"`
+	Label   string            `json:"label"`
+	Digest  string            `json:"digest,omitempty"`
+	Format  string            `json:"format"`
+	Version string            `json:"version"`
+}
+
+type ComparisonBasis struct {
+	Kind    string `json:"kind"`
+	Subject string `json:"subject"`
 }
 
 type Limitation struct {

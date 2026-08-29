@@ -26,7 +26,7 @@ type manifestDocument struct {
 func analyzeManifest(contents map[string][]byte, result *Result) {
 	data, exists := contents["manifest.json"]
 	if !exists {
-		manifestFinding(result, report.SeverityMedium, "missing-manifest", "Plugin manifest is missing", "Current Omarchy Shell plugins require manifest.json at the repository root. Without it, the target cannot be validated or loaded through the documented plugin mechanism.")
+		result.Limitations = append(result.Limitations, report.Limitation{Code: "missing-manifest", Description: "Current Omarchy Shell plugins require manifest.json at the repository root. Its absence cannot be anchored as file evidence, so it is retained as an explicit target-level limitation.", Scope: report.ScopeRuntime})
 		return
 	}
 	var document manifestDocument

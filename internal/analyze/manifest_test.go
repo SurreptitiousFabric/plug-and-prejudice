@@ -12,10 +12,10 @@ func TestValidManifestProducesMetadataWithoutManifestFinding(t *testing.T) {
 	}
 }
 
-func TestMissingManifestIsReportedAsFact(t *testing.T) {
+func TestMissingManifestIsReportedAsUnanchoredTargetLimitation(t *testing.T) {
 	result := Sources(map[string][]byte{"Panel.qml": []byte("Item {}\n")})
-	if !hasFindingID(result, "finding-missing-manifest") {
-		t.Fatalf("missing manifest was not reported: %#v", result.Findings)
+	if len(result.Limitations) == 0 || result.Limitations[0].Code != "missing-manifest" {
+		t.Fatalf("missing manifest limitation was not reported: %#v", result.Limitations)
 	}
 }
 

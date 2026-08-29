@@ -27,7 +27,7 @@ func AssignCoverageDispositions(files []report.File, contents map[string][]byte,
 	}
 	for index := range result {
 		file := &result[index]
-		file.Analysis, file.AnalysisReason = report.AnalysisNotApplicable, ""
+		file.Analysis, file.AnalysisReason = report.AnalysisNotApplicable, "not a retained artifact class with semantic behavior analysis"
 		if file.Kind != "regular" || !coverageRelevant(*file, contents[file.Path]) {
 			continue
 		}
@@ -38,7 +38,7 @@ func AssignCoverageDispositions(files []report.File, contents map[string][]byte,
 		} else if file.Binary != nil || limited[file.Path] {
 			file.Analysis, file.AnalysisReason = report.AnalysisPartial, "retained metadata or an explicit limitation leaves behavior unresolved"
 		} else {
-			file.Analysis = report.AnalysisAnalyzed
+			file.Analysis, file.AnalysisReason = report.AnalysisAnalyzed, ""
 		}
 	}
 	return result, coverageFromFiles(result)
@@ -114,7 +114,7 @@ func coverageRelevant(file report.File, data []byte) bool {
 }
 
 func coverageFromFiles(files []report.File) report.CoverageSummary {
-	var analyzed, partial, unanalyzed int
+	var analyzed, partial, unanalyzed, excluded int
 	for _, file := range files {
 		switch file.Analysis {
 		case report.AnalysisAnalyzed:
@@ -123,7 +123,9 @@ func coverageFromFiles(files []report.File) report.CoverageSummary {
 			partial++
 		case report.AnalysisUnanalyzed:
 			unanalyzed++
+		case report.AnalysisNotApplicable:
+			excluded++
 		}
 	}
-	return report.NewCoverageSummary(analyzed, partial, unanalyzed)
+	return report.NewCoverageSummary(analyzed, partial, unanalyzed, excluded)
 }

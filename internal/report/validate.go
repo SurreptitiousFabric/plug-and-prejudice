@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,7 +20,7 @@ func Decode(data []byte) (Report, error) {
 	if len(data) > MaxEncodedReportBytes {
 		return Report{}, fmt.Errorf("decode report: encoded input exceeds limit %d", MaxEncodedReportBytes)
 	}
-	if err := validateJSONObjectMembers(data); err != nil {
+	if err := validateJSONStructure(data, reflect.TypeOf(Report{})); err != nil {
 		return Report{}, fmt.Errorf("decode report: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -48,8 +49,13 @@ func (r Report) Validate() error {
 	if err := validateCollectionBounds(r); err != nil {
 		return err
 	}
-	if r.Inventory == nil || r.Operations == nil || r.Resources == nil || r.Findings == nil || r.Unknowns == nil || r.Relationships == nil || r.Limitations == nil || r.Errors == nil {
-		return errors.New("top-level report collections must be JSON arrays, not null")
+	for _, collection := range []struct {
+		name string
+		nil  bool
+	}{{"evidenceInputs", r.EvidenceInputs == nil}, {"inventory", r.Inventory == nil}, {"operations", r.Operations == nil}, {"resources", r.Resources == nil}, {"findings", r.Findings == nil}, {"unknowns", r.Unknowns == nil}, {"relationships", r.Relationships == nil}, {"limitations", r.Limitations == nil}, {"errors", r.Errors == nil}} {
+		if collection.nil {
+			return fmt.Errorf("top-level report collections must be JSON arrays, not null: %s", collection.name)
+		}
 	}
 	if !oneOf(string(r.Status), string(StatusComplete), string(StatusIncomplete), string(StatusError)) {
 		return fmt.Errorf("invalid report status %q", r.Status)
@@ -79,6 +85,10 @@ func (r Report) Validate() error {
 	}
 	if r.Target.FileCount != len(r.Inventory) {
 		return fmt.Errorf("target file count %d does not match inventory length %d", r.Target.FileCount, len(r.Inventory))
+	}
+	inputs, err := validateEvidenceInputs(r)
+	if err != nil {
+		return err
 	}
 	if manifest := r.Target.Manifest; manifest != nil && (manifest.Kinds == nil || manifest.EntryPoints == nil) {
 		return errors.New("manifest kinds and entry points must be JSON collections, not null")
@@ -115,8 +125,8 @@ func (r Report) Validate() error {
 		}
 		switch file.Analysis {
 		case AnalysisNotApplicable:
-			if file.AnalysisReason != "" {
-				return fmt.Errorf("inventory file %q has a reason for a not-applicable analysis disposition", file.Path)
+			if file.AnalysisReason == "" {
+				return fmt.Errorf("inventory file %q not-applicable disposition requires an explicit reason", file.Path)
 			}
 		case AnalysisAnalyzed:
 			if !file.Inspected || file.AnalysisReason != "" {
@@ -138,6 +148,15 @@ func (r Report) Validate() error {
 		}
 		if file.Binary != nil && (!file.Inspected || file.ContentType != "application/x-elf") {
 			return fmt.Errorf("inventory file %q has binary metadata without an inspected ELF", file.Path)
+		}
+		if (file.Binary != nil || file.ContentType == "application/x-elf") && file.Analysis != AnalysisPartial && file.Analysis != AnalysisUnanalyzed {
+			return fmt.Errorf("inventory ELF %q cannot claim complete or not-applicable semantic analysis", file.Path)
+		}
+		if file.Archive != nil && file.Analysis != AnalysisPartial && file.Analysis != AnalysisUnanalyzed {
+			return fmt.Errorf("inventory archive %q cannot claim complete or not-applicable semantic analysis", file.Path)
+		}
+		if file.Analysis == AnalysisNotApplicable && isObviouslyAnalyzablePath(file.Path) {
+			return fmt.Errorf("supported artifact %q cannot be excluded from semantic coverage", file.Path)
 		}
 		if file.Archive != nil && (!file.Inspected || file.Kind != "regular" || file.Binary != nil) {
 			return fmt.Errorf("inventory file %q has archive metadata without an inspected non-ELF regular file", file.Path)
@@ -213,7 +232,7 @@ func (r Report) Validate() error {
 		if err := validateScopeConfidence(operation.Scope, operation.Confidence); err != nil {
 			return fmt.Errorf("operation %q: %w", operation.ID, err)
 		}
-		if err := validateEvidence(operation.Evidence); err != nil {
+		if err := validateAnchoredEvidence(operation.Evidence, operation.Provenance, files, inputs); err != nil {
 			return fmt.Errorf("operation %q: %w", operation.ID, err)
 		}
 	}
@@ -235,7 +254,7 @@ func (r Report) Validate() error {
 		if err := validateScopeConfidence(resource.Scope, resource.Confidence); err != nil {
 			return fmt.Errorf("resource %q: %w", resource.ID, err)
 		}
-		if err := validateEvidence(resource.Evidence); err != nil {
+		if err := validateAnchoredEvidence(resource.Evidence, resource.Provenance, files, inputs); err != nil {
 			return fmt.Errorf("resource %q: %w", resource.ID, err)
 		}
 		if resource.RelatedOperationID == "" {
@@ -276,7 +295,7 @@ func (r Report) Validate() error {
 			return fmt.Errorf("finding %q: %w", finding.ID, err)
 		}
 		for _, evidence := range finding.Evidence {
-			if err := validateEvidence(evidence); err != nil {
+			if err := validateAnchoredEvidence(evidence, finding.Provenance, files, inputs); err != nil {
 				return fmt.Errorf("finding %q: %w", finding.ID, err)
 			}
 		}
@@ -293,6 +312,7 @@ func (r Report) Validate() error {
 		}
 	}
 	unknowns := make(map[string]struct{}, len(r.Unknowns))
+	nativeUnknownPaths := make(map[string]bool)
 	for _, unknown := range r.Unknowns {
 		if unknown.ID == "" || unknown.Reference != publicReference(NodeUnknown, unknown.ID) || unknown.Category == "" || unknown.Title == "" || unknown.Description == "" {
 			return errors.New("unknown identity, category, title, description, and public reference are required")
@@ -321,15 +341,20 @@ func (r Report) Validate() error {
 			return fmt.Errorf("unknown %q origin, affected-operation, and suppressed-rule collections must be JSON arrays", unknown.ID)
 		}
 		for _, evidence := range unknown.Evidence {
-			if err := validateEvidence(evidence); err != nil {
+			if err := validateAnchoredEvidence(evidence, unknown.Provenance, files, inputs); err != nil {
 				return fmt.Errorf("unknown %q: %w", unknown.ID, err)
+			}
+		}
+		if unknown.Reason == UnknownNativeBehavior {
+			for _, evidence := range unknown.Evidence {
+				nativeUnknownPaths[evidence.Path] = true
 			}
 		}
 		for _, origin := range unknown.Origins {
 			if !oneOf(string(origin.Kind), string(OriginAssignment), string(OriginParameterExpansion), string(OriginPropertyAssignment), string(OriginUseSite)) {
 				return fmt.Errorf("unknown %q has invalid origin kind %q", unknown.ID, origin.Kind)
 			}
-			if err := validateEvidence(origin.Evidence); err != nil {
+			if err := validateAnchoredEvidence(origin.Evidence, unknown.Provenance, files, inputs); err != nil {
 				return fmt.Errorf("unknown %q origin: %w", unknown.ID, err)
 			}
 		}
@@ -342,6 +367,11 @@ func (r Report) Validate() error {
 				return fmt.Errorf("unknown %q repeats affected operation %q", unknown.ID, affected)
 			}
 			seenAffected[affected] = true
+		}
+	}
+	for _, file := range r.Inventory {
+		if (file.Binary != nil || file.ContentType == "application/x-elf") && !nativeUnknownPaths[file.Path] {
+			return fmt.Errorf("inventory ELF %q lacks an explicit native-behavior unknown", file.Path)
 		}
 	}
 	if err := validateRelationships(r, referenceKinds, referenceProvenance); err != nil {
@@ -383,6 +413,9 @@ func (r Report) Validate() error {
 		}
 		if r.Review.AnalysisCoverage.Level != "complete" && r.Review.AnalysisCoverage.Level != "not-applicable" {
 			return errors.New("complete report requires complete analysis coverage")
+		}
+		if r.Review.AnalysisCoverage.ExcludedUnits != 0 {
+			return errors.New("complete report cannot exclude retained inventory from semantic coverage")
 		}
 	case StatusIncomplete:
 		if len(r.Unknowns) == 0 && len(r.Limitations) == 0 && len(r.Errors) == 0 {
@@ -603,13 +636,24 @@ func duplicateString(values []string) bool {
 }
 
 func validateRelationships(r Report, kinds map[string]NodeKind, provenance map[string]Provenance) error {
-	required := make(map[string]bool, len(r.Resources)+len(r.Findings)*2)
+	return validateRelationshipsWithDigest(r, kinds, provenance, sha256.Sum256)
+}
+
+func validateRelationshipsWithDigest(r Report, kinds map[string]NodeKind, provenance map[string]Provenance, digest digestFunction) error {
+	type edgeTuple struct {
+		kind     RelationshipType
+		fromKind NodeKind
+		from     string
+		toKind   NodeKind
+		to       string
+	}
+	required := make(map[edgeTuple]bool, len(r.Resources)+len(r.Findings)*2)
 	operationReferences := make(map[string]string, len(r.Operations))
 	for _, operation := range r.Operations {
 		operationReferences[operation.ID] = operation.Reference
 	}
 	for _, resource := range r.Resources {
-		required[relationshipID(RelationshipDerivedFrom, NodeResource, resource.Reference, NodeOperation, operationReferences[resource.RelatedOperationID])] = false
+		required[edgeTuple{RelationshipDerivedFrom, NodeResource, resource.Reference, NodeOperation, operationReferences[resource.RelatedOperationID]}] = false
 	}
 	for _, finding := range r.Findings {
 		kind := RelationshipEstablishedBy
@@ -617,29 +661,34 @@ func validateRelationships(r Report, kinds map[string]NodeKind, provenance map[s
 			kind = RelationshipInferredFrom
 		}
 		for _, related := range finding.Related {
-			required[relationshipID(kind, NodeFinding, finding.Reference, NodeOperation, operationReferences[related])] = false
+			required[edgeTuple{kind, NodeFinding, finding.Reference, NodeOperation, operationReferences[related]}] = false
 		}
 	}
 	for _, unknown := range r.Unknowns {
 		for _, affected := range unknown.AffectedOperations {
-			required[relationshipID(RelationshipUnknownBecause, NodeUnknown, unknown.Reference, NodeOperation, operationReferences[affected])] = false
+			required[edgeTuple{RelationshipUnknownBecause, NodeUnknown, unknown.Reference, NodeOperation, operationReferences[affected]}] = false
 		}
 	}
 
-	seen := make(map[string]bool, len(r.Relationships))
+	seen := make(map[string]edgeTuple, len(r.Relationships))
 	comparisonPairs := make(map[string]RelationshipType)
+	comparisonCount := 0
 	for _, relationship := range r.Relationships {
 		if relationship.ID == "" || relationship.From == "" || relationship.To == "" || relationship.From == relationship.To {
 			return errors.New("relationship identity and distinct endpoints are required")
 		}
-		if seen[relationship.ID] {
+		tuple := edgeTuple{relationship.Type, relationship.FromKind, relationship.From, relationship.ToKind, relationship.To}
+		if previous, exists := seen[relationship.ID]; exists {
+			if previous != tuple {
+				return fmt.Errorf("relationship ID %q collides across distinct typed tuples", relationship.ID)
+			}
 			return fmt.Errorf("duplicate relationship ID %q", relationship.ID)
 		}
-		seen[relationship.ID] = true
+		seen[relationship.ID] = tuple
 		if kinds[relationship.From] != relationship.FromKind || kinds[relationship.To] != relationship.ToKind {
 			return fmt.Errorf("relationship %q has missing or incorrectly typed endpoints", relationship.ID)
 		}
-		if relationship.ID != relationshipID(relationship.Type, relationship.FromKind, relationship.From, relationship.ToKind, relationship.To) {
+		if relationship.ID != relationshipIDWithDigest(relationship.Type, relationship.FromKind, relationship.From, relationship.ToKind, relationship.To, digest) {
 			return fmt.Errorf("relationship %q does not match its typed endpoints", relationship.ID)
 		}
 		switch relationship.Type {
@@ -647,41 +696,30 @@ func validateRelationships(r Report, kinds map[string]NodeKind, provenance map[s
 			if relationship.FromKind != NodeResource || relationship.ToKind != NodeOperation {
 				return fmt.Errorf("relationship %q has invalid derived-from endpoint types", relationship.ID)
 			}
-			if _, requiredBaseEdge := required[relationship.ID]; !requiredBaseEdge {
+			if _, requiredBaseEdge := required[tuple]; !requiredBaseEdge {
 				return fmt.Errorf("relationship %q is not the resource's declared origin", relationship.ID)
 			}
 		case RelationshipEstablishedBy, RelationshipInferredFrom:
 			if relationship.FromKind != NodeFinding || relationship.ToKind != NodeOperation {
 				return fmt.Errorf("relationship %q has invalid finding-support endpoint types", relationship.ID)
 			}
-			if _, requiredBaseEdge := required[relationship.ID]; !requiredBaseEdge {
+			if _, requiredBaseEdge := required[tuple]; !requiredBaseEdge {
 				return fmt.Errorf("relationship %q does not match the finding's claim or declared support", relationship.ID)
 			}
 		case RelationshipUnknownBecause:
 			if (relationship.FromKind != NodeFinding && relationship.FromKind != NodeUnknown) || relationship.ToKind != NodeOperation {
 				return fmt.Errorf("relationship %q has invalid unknown-support endpoint types", relationship.ID)
 			}
-			if _, requiredBaseEdge := required[relationship.ID]; !requiredBaseEdge {
+			if _, requiredBaseEdge := required[tuple]; !requiredBaseEdge {
 				return fmt.Errorf("relationship %q does not match the unknown's declared affected operation", relationship.ID)
 			}
-		case RelationshipCorroborates, RelationshipDisagreesWith:
-			if relationship.From > relationship.To {
-				return fmt.Errorf("relationship %q comparison endpoints are not canonical", relationship.ID)
+		case RelationshipCorroborates, RelationshipDisagreesWith, RelationshipDuplicates:
+			comparisonCount++
+			if comparisonCount > MaxComparisonRelations {
+				return errors.New("comparison relationship count exceeds accepting limit")
 			}
-			if provenance[relationship.From].EvidenceSource == provenance[relationship.To].EvidenceSource {
-				return fmt.Errorf("relationship %q claims independent evidence from the same source", relationship.ID)
-			}
-			pair := relationship.From + "\x00" + relationship.To
-			if previous, exists := comparisonPairs[pair]; exists {
-				return fmt.Errorf("relationship %q conflicts with existing %s comparison", relationship.ID, previous)
-			}
-			comparisonPairs[pair] = relationship.Type
-		case RelationshipDuplicates:
-			if relationship.From > relationship.To {
-				return fmt.Errorf("relationship %q duplicate endpoints are not canonical", relationship.ID)
-			}
-			if provenance[relationship.From].EvidenceSource != provenance[relationship.To].EvidenceSource {
-				return fmt.Errorf("relationship %q calls observations from different sources duplicates", relationship.ID)
+			if err := validateComparisonRelationship(r, relationship, provenance); err != nil {
+				return fmt.Errorf("relationship %q: %w", relationship.ID, err)
 			}
 			pair := relationship.From + "\x00" + relationship.To
 			if previous, exists := comparisonPairs[pair]; exists {
@@ -691,16 +729,103 @@ func validateRelationships(r Report, kinds map[string]NodeKind, provenance map[s
 		default:
 			return fmt.Errorf("relationship %q has invalid type %q", relationship.ID, relationship.Type)
 		}
-		if _, exists := required[relationship.ID]; exists {
-			required[relationship.ID] = true
+		if _, exists := required[tuple]; exists {
+			required[tuple] = true
 		}
 	}
-	for id, present := range required {
+	for tuple, present := range required {
 		if !present {
-			return fmt.Errorf("required evidence relationship %q is missing", id)
+			return fmt.Errorf("required evidence relationship %v is missing", tuple)
 		}
 	}
 	return nil
+}
+
+func validateComparisonRelationship(r Report, relationship Relationship, provenance map[string]Provenance) error {
+	if relationship.Comparison == nil || relationship.Comparison.Kind == "" || relationship.Comparison.Subject == "" {
+		return errors.New("typed comparison basis is required")
+	}
+	fromSubject, fromOK := semanticSubjectByReference(r, relationship.FromKind, relationship.From)
+	toSubject, toOK := semanticSubjectByReference(r, relationship.ToKind, relationship.To)
+	fromProvenance, toProvenance := provenance[relationship.From], provenance[relationship.To]
+	sameAnalyzer := fromProvenance.Analyzer == toProvenance.Analyzer && fromProvenance.AnalyzerVersion == toProvenance.AnalyzerVersion
+	switch relationship.Type {
+	case RelationshipCorroborates:
+		if relationship.From > relationship.To || relationship.FromKind != relationship.ToKind || (relationship.FromKind != NodeOperation && relationship.FromKind != NodeResource) || !fromOK || !toOK || fromSubject != toSubject || relationship.Comparison.Kind != string(relationship.FromKind) || relationship.Comparison.Subject != fromSubject {
+			return errors.New("corroboration endpoints do not share one compatible semantic subject")
+		}
+		fromExternal := fromProvenance.EvidenceSource == EvidenceSourceOmarchyAudit
+		toExternal := toProvenance.EvidenceSource == EvidenceSourceOmarchyAudit
+		if fromExternal == toExternal || sameAnalyzer {
+			return errors.New("corroboration requires one local and one independently produced external observation")
+		}
+	case RelationshipDuplicates:
+		if relationship.From > relationship.To || relationship.FromKind != relationship.ToKind || !fromOK || !toOK || fromSubject != toSubject || relationship.Comparison.Kind != string(relationship.FromKind) || relationship.Comparison.Subject != fromSubject || !duplicateEquivalentByReference(r, relationship.FromKind, relationship.From, relationship.To) {
+			return errors.New("duplicate endpoints are not semantically equivalent observations of one kind")
+		}
+		if fromProvenance.EvidenceSource != toProvenance.EvidenceSource || !sameAnalyzer {
+			return errors.New("duplicates must share one evidence-source and analyzer boundary")
+		}
+	case RelationshipDisagreesWith:
+		if relationship.ToKind != NodeFinding || relationship.Comparison.Kind != "coverage" || !fromOK || relationship.Comparison.Subject != fromSubject || !coverageFindingByReference(r, relationship.To) {
+			return errors.New("disagreement is not an observation-to-coverage-difference comparison")
+		}
+	default:
+		return errors.New("invalid comparison type")
+	}
+	return nil
+}
+
+func duplicateEquivalentByReference(r Report, kind NodeKind, firstReference, secondReference string) bool {
+	firstID, secondID := "", ""
+	switch kind {
+	case NodeOperation:
+		for _, item := range r.Operations {
+			if item.Reference == firstReference {
+				firstID = item.ID
+			}
+			if item.Reference == secondReference {
+				secondID = item.ID
+			}
+		}
+	case NodeResource:
+		for _, item := range r.Resources {
+			if item.Reference == firstReference {
+				firstID = item.ID
+			}
+			if item.Reference == secondReference {
+				secondID = item.ID
+			}
+		}
+	}
+	return firstID != "" && secondID != "" && r.duplicateEquivalent(kind, firstID, secondID)
+}
+
+func semanticSubjectByReference(r Report, kind NodeKind, reference string) (string, bool) {
+	switch kind {
+	case NodeOperation:
+		for _, item := range r.Operations {
+			if item.Reference == reference {
+				return "command\x00" + path.Base(item.Command), true
+			}
+		}
+	case NodeResource:
+		for _, item := range r.Resources {
+			if item.Reference == reference {
+				return item.Kind + "\x00" + item.Access + "\x00" + item.Value, true
+			}
+		}
+	}
+	return "", false
+}
+
+func coverageFindingByReference(r Report, reference string) bool {
+	for _, item := range r.Findings {
+		if item.Reference == reference {
+			return item.Category == "omarchy-audit-coverage-disagreement"
+		}
+	}
+	return false
 }
 
 func validateScopeConfidence(scope Scope, confidence Confidence) error {
@@ -714,8 +839,8 @@ func validateScopeConfidence(scope Scope, confidence Confidence) error {
 }
 
 func validateEvidence(evidence Evidence) error {
-	if evidence.Path == "" {
-		return errors.New("evidence path is required")
+	if evidence.InputID == "" || evidence.Path == "" {
+		return errors.New("evidence input ID and path are required")
 	}
 	if err := validateRelativePath(evidence.Path); err != nil {
 		return err
@@ -726,6 +851,68 @@ func validateEvidence(evidence Evidence) error {
 		return fmt.Errorf("invalid evidence lines for %q", evidence.Path)
 	}
 	return nil
+}
+
+func validateEvidenceInputs(r Report) (map[string]EvidenceInput, error) {
+	if len(r.EvidenceInputs) == 0 || len(r.EvidenceInputs) > MaxEvidenceInputs {
+		return nil, errors.New("report requires a bounded evidence-input declaration")
+	}
+	values := make(map[string]EvidenceInput, len(r.EvidenceInputs))
+	for _, input := range r.EvidenceInputs {
+		if input.ID == "" || input.Label == "" || input.Format == "" || input.Version == "" {
+			return nil, errors.New("evidence input identity, label, format, and version are required")
+		}
+		if _, exists := values[input.ID]; exists {
+			return nil, fmt.Errorf("duplicate evidence input %q", input.ID)
+		}
+		if !oneOf(string(input.Type), string(EvidenceInputTarget), string(EvidenceInputOmarchyAudit)) {
+			return nil, fmt.Errorf("evidence input %q has invalid type %q", input.ID, input.Type)
+		}
+		if input.Digest != "" {
+			decoded, err := hex.DecodeString(input.Digest)
+			if err != nil || len(decoded) != 32 || strings.ToLower(input.Digest) != input.Digest {
+				return nil, fmt.Errorf("evidence input %q digest must be lowercase SHA-256", input.ID)
+			}
+		}
+		values[input.ID] = input
+	}
+	target, exists := values[TargetEvidenceInputID]
+	if !exists || target.Type != EvidenceInputTarget || target.Digest != r.Target.RootDigest {
+		return nil, errors.New("target evidence input must identify and bind the retained target inventory")
+	}
+	return values, nil
+}
+
+func validateAnchoredEvidence(evidence Evidence, provenance Provenance, files map[string]struct{}, inputs map[string]EvidenceInput) error {
+	if err := validateEvidence(evidence); err != nil {
+		return err
+	}
+	input, exists := inputs[evidence.InputID]
+	if !exists {
+		return fmt.Errorf("evidence refers to undeclared input %q", evidence.InputID)
+	}
+	switch provenance.EvidenceSource {
+	case EvidenceSourceTargetSource, EvidenceSourceInventoryMetadata:
+		if input.Type != EvidenceInputTarget || evidence.InputID != TargetEvidenceInputID {
+			return errors.New("local evidence does not refer to the declared target inventory")
+		}
+		if _, exists := files[evidence.Path]; !exists {
+			return fmt.Errorf("local evidence path %q is absent from target inventory", evidence.Path)
+		}
+	case EvidenceSourceOmarchyAudit:
+		if input.Type != EvidenceInputOmarchyAudit {
+			return errors.New("external evidence does not refer to a declared Omarchy audit input")
+		}
+	}
+	return nil
+}
+
+func isObviouslyAnalyzablePath(value string) bool {
+	switch strings.ToLower(path.Ext(value)) {
+	case ".sh", ".bash", ".zsh", ".qml", ".py", ".pyw", ".js", ".mjs", ".cjs", ".jsx", ".desktop", ".service", ".socket", ".timer":
+		return true
+	}
+	return value == "manifest.json"
 }
 
 func validateRelativePath(value string) error {

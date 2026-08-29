@@ -2,9 +2,11 @@
 
 Status: versioned development contract; not yet release-stable.
 
-The scanner emits one UTF-8 JSON object no larger than 16 MiB and validates it
-before writing any bytes. The trusted broker accepts no duplicate or unknown
-object members, excessive nesting, trailing values, unsupported schema versions, invalid enum values,
+The scanner emits one canonical, HTML-escaped UTF-8 JSON object no larger than
+16 MiB. It validates and bounded-encodes that exact representation in memory
+before writing any destination bytes. The trusted broker accepts no malformed
+UTF-8, invalid UTF-16 surrogate escapes, duplicate members, case aliases,
+unknown exact member names, excessive nesting, trailing values, unsupported schema versions, invalid enum values,
 unsafe evidence paths, broken operation references, or contradictory
 `complete` status. The standalone scanner validates the complete object before
 writing any report bytes; the broker independently decodes and validates it
@@ -18,7 +20,10 @@ hash-derived public `PP-` references are unique across node kinds and are
 recomputed rather than trusted by the validator. Typed relationship IDs and
 endpoints are unique, bounded, and validated against the originating resource
 or finding claim. Structured provenance requires a rule ID, analyzer, analyzer
-version, and evidence source. Local evidence must name the trusted deterministic
+version, and evidence source. Every evidence location names a bounded declared
+input. Local source and inventory-metadata evidence must name an actually
+retained target inventory path; external Omarchy evidence must name its
+separate declared pinned audit input and cannot impersonate the target. Local evidence must name the trusted deterministic
 analyzer and exact scanner version; Omarchy evidence names its distinct
 analyzer. Provenance identifies an asserted producer, not truth. Inventory paths are unique canonical POSIX
 target-relative labels. `target.fileCount` equals
@@ -40,8 +45,10 @@ reconciles both totals without overflowing on hostile sizes.
 Every JSON-visible string and map key is independently bounded by encoded JSON
 size. A structural pre-pass rejects duplicate members and nesting deeper than
 64 levels before typed decoding. The validated object graph is also bounded: at most 10,000 inventory entries,
-20,000 operations, resources, findings, and limitations respectively, 340,000
-typed relationships, and 10,000 scan errors. The deterministic producer uses a
+20,000 operations, resources, findings, and limitations respectively, 680,000
+typed relationships (20,000 resource origins + 320,000 finding support +
+320,000 unknown-operation support + 20,000 comparisons), and 10,000 scan
+errors. The deterministic producer uses a
 lower 20,000-relationship budget. These are rejection limits, not silent
 truncation rules.
 They constrain a compromised or buggy producer before its graph reaches the
@@ -49,9 +56,11 @@ panel. The scanner's own analysis-production budget remains a separate required
 defense so a hostile target cannot waste work before serialization; the
 recommended design is recorded in [ADR 0005](decisions/0005-analysis-production-budget.md).
 
-For identical retained target bytes, inventory metadata, and policy, analysis
-collections and their relationship IDs are emitted in deterministic order;
-source-map insertion and input enumeration order must not affect them. Scan
+Canonical encoding sorts inventory by path; evidence nodes by full internal
+identity; relationships by complete typed tuple; limitations and errors by
+documented field tuples; and bounded review reasons by priority then stable
+reference/title. JSON map keys use the standard canonical lexical ordering.
+Producer insertion order does not affect emitted bytes. Scan
 start/completion timestamps are observations and therefore intentionally vary.
 Deterministic ordering supports report comparison and audit but does not turn a
 scan into a reproducible or atomic filesystem snapshot.
@@ -62,6 +71,8 @@ scan into a reproducible or atomic filesystem snapshot.
   established containment, and exact memory/swap/task/CPU/wall-time limits.
 - `target`: display identity, bounded inventory totals, content digest, and any
   deterministically parsed Omarchy manifest.
+- `evidenceInputs`: bounded typed declarations separating the retained target
+  inventory from pinned external audit documents.
 - `inventory`: files and deliberately skipped inputs, including inspected ELF
   metadata without executing binaries and bounded archive member metadata
   without extracting payloads.
@@ -85,7 +96,13 @@ scan into a reproducible or atomic filesystem snapshot.
   and bounded main reasons. The dimensions and denominator are defined in ADR
   0018 and never form a safety score.
 
-Optional Omarchy audit nodes retain `omarchy-audit` provenance. Exact matches
+Optional Omarchy audit nodes retain `omarchy-audit` provenance. `corroborates`
+is restricted to operation/operation or resource/resource observations with
+the same validated semantic subject, one local producer and one distinct
+external producer. `duplicates` requires the same kind, semantic payload, and
+source/analyzer boundary. `disagrees-with` is restricted to an observation and
+an informational Omarchy coverage-difference finding with a visible typed
+comparison basis. Exact matches
 may be connected with `corroborates`; retained-set differences use
 `disagrees-with` plus an informational coverage finding. Neither edge asserts
 correctness or safety. The pinned PR #8439 format lacks a target digest, so an
@@ -100,13 +117,19 @@ hash skipped file content, establish an atomic filesystem snapshot, or prove
 that the target has not changed since the scan.
 
 Each inventory record carries one authoritative analysis disposition:
-`not-applicable`, `analyzed`, `partial`, or `unanalyzed`. Partial and
-unanalyzed units require a reason. Coverage is recomputed from these records;
-inventory retention alone is not semantic analysis.
+`not-applicable`, `analyzed`, `partial`, or `unanalyzed`. Every disposition is
+counted exactly once: `retainedUnits = totalUnits + excludedUnits`, while
+`totalUnits = analyzedUnits + partialUnits + unanalyzedUnits`. Every exclusion,
+partial unit, and unanalyzed unit requires a reason. ELF and bounded archive
+metadata cannot claim complete semantic behavior analysis; native ELF behavior
+also requires an explicit unknown. Coverage is recomputed from these records;
+inventory retention alone is not semantic analysis. The validator can enforce
+artifact classes visible in serialized metadata, but cannot rediscover every
+language without retained bytes.
 
 Arrays are always emitted as arrays rather than `null`. A `complete` report has
-no unknowns, limitations, or errors and requires complete or genuinely
-not-applicable coverage. `incomplete` means the visible findings
+no unknowns, limitations, errors, or excluded retained units and requires
+complete coverage (or an actually empty denominator and inventory). `incomplete` means the visible findings
 remain useful but are not exhaustive and must contain at least one unknown,
 limitation, or scan error explaining why. `error` is reserved for a structured scan result that
 could not complete and must contain at least one scan error; broker or

@@ -17,7 +17,7 @@ separate the rule, analyzer version, and evidence source.
 Adopt report schema `2.0.0` before the first stable release. Every operation,
 resource, and finding receives:
 
-- a public `PP-` reference derived from the first 64 bits of SHA-256 over its
+- a public `PP-` reference derived from the first 128 bits of SHA-256 over its
   node kind and deterministic internal ID;
 - a structured provenance object containing rule ID, analyzer identity,
   analyzer version, and evidence source; and
@@ -35,8 +35,12 @@ severity and uses `unknown-because`; it cannot masquerade as a finding. Optional
 cross-source edges use `corroborates` or `disagrees-with`; same-source repeated
 observations use `duplicates`. The validator checks endpoint existence and
 kind, recomputes edge IDs, requires every base edge, rejects extra forged base
-edges, requires different evidence sources for corroboration/disagreement, and
-requires the same source for duplication.
+edges, and validates a typed semantic comparison basis. Corroboration requires
+compatible local/external observations from distinct analyzers; duplication
+requires equivalent observations within one source/analyzer boundary;
+disagreement is limited to a typed observation-to-coverage-difference shape.
+Required edges are keyed by their complete typed tuples, never their display
+hashes.
 
 The deterministic producer retains at most 20,000 resource/finding edges and
 applies the limitation/incomplete semantics from ADR 0005 before appending a
@@ -60,8 +64,10 @@ clickable path, URL, command, QML expression, HTML fragment, or Markdown.
 
 ## Residual risk and review gate
 
-A 64-bit truncated reference has a very small but nonzero collision
-possibility. Collision is fail-closed validation failure, never aliasing.
+A 128-bit truncated reference has a very small but nonzero collision
+possibility. Node and relationship construction track the complete identity or
+typed tuple behind each display ID, and any collision is a fail-closed
+validation failure, never aliasing. Full internal IDs remain the machine join.
 References establish stable report identity, not source authenticity or signed
 release provenance.
 

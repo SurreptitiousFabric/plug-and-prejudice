@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -53,7 +52,7 @@ func run() int {
 	limitations := append(result.Limitations, analysis.Limitations...)
 	files, coverage := analyze.AssignCoverageDispositions(result.Files, result.Contents, limitations, result.Errors)
 	status := report.StatusComplete
-	if len(analysis.Unknowns) > 0 || len(result.Errors) > 0 || len(limitations) > 0 || (coverage.Level != "complete" && coverage.Level != "not-applicable") {
+	if len(analysis.Unknowns) > 0 || len(result.Errors) > 0 || len(limitations) > 0 || coverage.ExcludedUnits > 0 || (coverage.Level != "complete" && coverage.Level != "not-applicable") {
 		status = report.StatusIncomplete
 	}
 	r := report.Report{
@@ -75,14 +74,15 @@ func run() int {
 			BinaryBytes: result.BinaryBytes,
 			Manifest:    analysis.Manifest,
 		},
-		Inventory:     nonNil(files),
-		Operations:    nonNil(analysis.Operations),
-		Resources:     nonNil(analysis.Resources),
-		Findings:      nonNil(analysis.Findings),
-		Unknowns:      nonNil(analysis.Unknowns),
-		Relationships: []report.Relationship{},
-		Limitations:   nonNil(limitations),
-		Errors:        nonNil(result.Errors),
+		EvidenceInputs: []report.EvidenceInput{{ID: report.TargetEvidenceInputID, Type: report.EvidenceInputTarget, Label: "scanned target", Digest: result.RootDigest, Format: "plug-prejudice-inventory", Version: report.SchemaVersion}},
+		Inventory:      nonNil(files),
+		Operations:     nonNil(analysis.Operations),
+		Resources:      nonNil(analysis.Resources),
+		Findings:       nonNil(analysis.Findings),
+		Unknowns:       nonNil(analysis.Unknowns),
+		Relationships:  []report.Relationship{},
+		Limitations:    nonNil(limitations),
+		Errors:         nonNil(result.Errors),
 	}
 	if status == report.StatusIncomplete && len(r.Unknowns) == 0 && len(r.Limitations) == 0 && len(r.Errors) == 0 {
 		r.Limitations = append(r.Limitations, report.Limitation{Code: "analysis-coverage-incomplete", Description: "At least one retained artifact was only partially analyzed or could not be analyzed.", Scope: report.ScopeUnknown})
@@ -95,14 +95,7 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "build review summary: %v\n", err)
 		return 1
 	}
-	if err := r.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "validate report: %v\n", err)
-		return 1
-	}
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetEscapeHTML(true)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(r); err != nil {
+	if err := report.WriteCanonical(os.Stdout, r); err != nil {
 		fmt.Fprintf(os.Stderr, "encode report: %v\n", err)
 		return 1
 	}

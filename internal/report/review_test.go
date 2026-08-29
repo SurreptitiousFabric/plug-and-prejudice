@@ -12,6 +12,7 @@ func TestReviewSummarySeparatesImpactConfidenceCoverageUnknownsAndCounts(t *test
 	for index := range r.Inventory {
 		r.Inventory[index] = File{Path: fmt.Sprintf("unit-%02d", index), Kind: "regular", Mode: "-rw-r--r--", Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "text/plain", Analysis: AnalysisAnalyzed}
 	}
+	r.Inventory[0].Path = "plugin.sh"
 	r.Inventory[8].Analysis, r.Inventory[8].AnalysisReason = AnalysisPartial, "partial syntax support"
 	r.Inventory[9].Inspected, r.Inventory[9].SHA256, r.Inventory[9].ContentType = false, "", ""
 	r.Inventory[9].Analysis, r.Inventory[9].AnalysisReason = AnalysisUnanalyzed, "unsupported artifact"
@@ -63,7 +64,7 @@ func TestCoveragePercentageRequiresExplicitNonzeroDenominator(t *testing.T) {
 
 func TestValidateRejectsReviewSummaryThatDoesNotMatchEvidence(t *testing.T) {
 	r := graphReport(t)
-	if err := r.BuildReviewSummary(NewCoverageSummary(0, 0, 0)); err != nil {
+	if err := r.BuildReviewSummary(coverageFromInventory(r.Inventory)); err != nil {
 		t.Fatal(err)
 	}
 	r.Review.SecurityImpact.Level = SeverityCritical

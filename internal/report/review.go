@@ -204,7 +204,7 @@ func validateReviewSummary(r Report) error {
 }
 
 func coverageFromInventory(files []File) CoverageSummary {
-	var analyzed, partial, unanalyzed int
+	var analyzed, partial, unanalyzed, excluded int
 	for _, file := range files {
 		switch file.Analysis {
 		case AnalysisAnalyzed:
@@ -213,16 +213,18 @@ func coverageFromInventory(files []File) CoverageSummary {
 			partial++
 		case AnalysisUnanalyzed:
 			unanalyzed++
+		case AnalysisNotApplicable:
+			excluded++
 		}
 	}
-	return NewCoverageSummary(analyzed, partial, unanalyzed)
+	return NewCoverageSummary(analyzed, partial, unanalyzed, excluded)
 }
 
 func validateCoverageSummary(value CoverageSummary) error {
-	if value.Denominator != CoverageDenominator || value.AnalyzedUnits < 0 || value.PartialUnits < 0 || value.UnanalyzedUnits < 0 || value.TotalUnits < 0 || value.AnalyzedUnits+value.PartialUnits+value.UnanalyzedUnits != value.TotalUnits {
+	if value.Denominator != CoverageDenominator || value.AnalyzedUnits < 0 || value.PartialUnits < 0 || value.UnanalyzedUnits < 0 || value.ExcludedUnits < 0 || value.TotalUnits < 0 || value.RetainedUnits < 0 || value.AnalyzedUnits+value.PartialUnits+value.UnanalyzedUnits != value.TotalUnits || value.TotalUnits+value.ExcludedUnits != value.RetainedUnits {
 		return errors.New("analysis coverage has an invalid denominator or unit counts")
 	}
-	if value.AnalyzedUnits > MaxInventoryEntries || value.PartialUnits > MaxInventoryEntries || value.UnanalyzedUnits > MaxInventoryEntries || value.TotalUnits > MaxInventoryEntries {
+	if value.AnalyzedUnits > MaxInventoryEntries || value.PartialUnits > MaxInventoryEntries || value.UnanalyzedUnits > MaxInventoryEntries || value.ExcludedUnits > MaxInventoryEntries || value.TotalUnits > MaxInventoryEntries || value.RetainedUnits > MaxInventoryEntries {
 		return errors.New("analysis coverage unit counts exceed inventory limits")
 	}
 	level := "not-applicable"
@@ -251,8 +253,12 @@ func validateCoverageSummary(value CoverageSummary) error {
 	return nil
 }
 
-func NewCoverageSummary(analyzed, partial, unanalyzed int) CoverageSummary {
-	value := CoverageSummary{Denominator: CoverageDenominator, AnalyzedUnits: analyzed, PartialUnits: partial, UnanalyzedUnits: unanalyzed, TotalUnits: analyzed + partial + unanalyzed}
+func NewCoverageSummary(analyzed, partial, unanalyzed int, excluded ...int) CoverageSummary {
+	excludedUnits := 0
+	if len(excluded) == 1 {
+		excludedUnits = excluded[0]
+	}
+	value := CoverageSummary{Denominator: CoverageDenominator, AnalyzedUnits: analyzed, PartialUnits: partial, UnanalyzedUnits: unanalyzed, ExcludedUnits: excludedUnits, TotalUnits: analyzed + partial + unanalyzed, RetainedUnits: analyzed + partial + unanalyzed + excludedUnits}
 	if value.TotalUnits == 0 {
 		value.Level = "not-applicable"
 		return value
