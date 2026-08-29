@@ -29,9 +29,13 @@ directly verifies `memory.max`, `memory.swap.max`, `pids.max`, and `cpu.max` are
 at least as strict as policy. It then lowers `RLIMIT_CORE` to zero and
 `RLIMIT_NOFILE` to at most 256. Only after those checks does it resolve the
 installed plugin and open the target/scanner descriptors for Bubblewrap.
-The broker uses fixed `/usr/bin/systemd-run` and `/usr/bin/bwrap` paths only
-after verifying each is a root-owned, executable, non-symlink regular file;
-inherited `PATH` cannot substitute a containment tool.
+The broker opens fixed `/usr/bin/systemd-run` and `/usr/bin/bwrap` paths with
+Linux `openat2`, rejecting symlinks and magic links, then verifies each pinned
+descriptor is a root-owned, executable, non-group/world-writable ELF regular file.
+Execution uses `/proc/self/fd/N`, which Linux resolves to that open inode during
+`execve`; a pathname or mount replacement after validation cannot substitute a
+containment tool. This relies on Linux procfs being mounted and available to the
+trusted broker. Inherited `PATH` is never used to choose either executable.
 
 Bubblewrap retains the independent 30-second context deadline. The extra five
 seconds on the outer scope allow ordinary broker validation and teardown while
