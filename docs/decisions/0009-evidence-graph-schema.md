@@ -29,8 +29,9 @@ the expected public reference again, rejects collisions, and never accepts a
 producer-selected alias.
 
 The report also contains a bounded typed relationship collection. Resources
-use `derived-from`; fact, inference, and unknown findings use
-`established-by`, `inferred-from`, and `unknown-because`. Optional future
+use `derived-from`; fact and inference findings use `established-by` and
+`inferred-from`. Unresolved behavior is a dedicated unknown node without
+severity and uses `unknown-because`; it cannot masquerade as a finding. Optional future
 cross-source edges use `corroborates` or `disagrees-with`; same-source repeated
 observations use `duplicates`. The validator checks endpoint existence and
 kind, recomputes edge IDs, requires every base edge, rejects extra forged base

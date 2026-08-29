@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-var testProvenance = Provenance{RuleID: "test/v1", Analyzer: "test", AnalyzerVersion: "1.0.0", EvidenceSource: EvidenceSourceTargetSource}
+var testProvenance = Provenance{RuleID: "test/v1", Analyzer: "plug-prejudice/deterministic", AnalyzerVersion: "test", EvidenceSource: EvidenceSourceTargetSource}
 
 func buildTestEvidence(t *testing.T, r *Report) {
 	t.Helper()
@@ -45,7 +45,7 @@ func TestVersionTwoGoldenReport(t *testing.T) {
 	if got.SchemaVersion != SchemaVersion {
 		t.Fatalf("schema version = %q, want %q", got.SchemaVersion, SchemaVersion)
 	}
-	if len(got.Operations) != 1 || len(got.Resources) != 1 || len(got.Findings) != 3 || len(got.Unknowns) != 1 {
+	if len(got.Operations) != 1 || len(got.Resources) != 1 || len(got.Findings) != 2 || len(got.Unknowns) != 1 {
 		t.Fatalf("fixture sections were not preserved: %#v", got)
 	}
 }
@@ -153,6 +153,8 @@ func TestValidateRejectsInvalidInventoryLimitationsAndErrors(t *testing.T) {
 		t.Fatalf("unsafe inventory path error = %v", err)
 	}
 	r.Inventory[0].Path = "plugin.sh"
+	r.Inventory[0].Analysis = AnalysisUnanalyzed
+	r.Inventory[0].AnalysisReason = "test input was not inspected"
 	r.Inventory = append(r.Inventory, r.Inventory[0])
 	r.Target.FileCount = 2
 	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate inventory path") {
@@ -407,9 +409,10 @@ func TestValidateReconcilesInspectedByteTotals(t *testing.T) {
 	valid.Target.ReadBytes = 7
 	valid.Target.BinaryBytes = 11
 	valid.Inventory = []File{
-		{Path: "plugin.sh", Kind: "regular", Mode: "-rw-r--r--", Size: 7, Inspected: true, SHA256: digest, ContentType: "text/plain"},
-		{Path: "helper", Kind: "regular", Mode: "-rwxr-xr-x", Size: 11, Inspected: true, SHA256: digest, ContentType: "application/x-elf"},
+		{Path: "plugin.sh", Kind: "regular", Mode: "-rw-r--r--", Size: 7, Inspected: true, SHA256: digest, ContentType: "text/plain", Analysis: AnalysisAnalyzed},
+		{Path: "helper", Kind: "regular", Mode: "-rwxr-xr-x", Size: 11, Inspected: true, SHA256: digest, ContentType: "application/x-elf", Analysis: AnalysisAnalyzed},
 	}
+	_ = valid.BuildReviewSummary(NewCoverageSummary(2, 0, 0))
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("matching byte totals were rejected: %v", err)
 	}
@@ -468,9 +471,10 @@ func TestValidateRequiresCompleteParsedELFMetadata(t *testing.T) {
 	valid.Target.BinaryBytes = 10
 	valid.Inventory = []File{{
 		Path: "helper", Kind: "regular", Mode: "-rwxr-xr-x", Size: 10, Inspected: true,
-		SHA256: digest, ContentType: "application/x-elf",
+		SHA256: digest, ContentType: "application/x-elf", Analysis: AnalysisAnalyzed,
 		Binary: &Binary{Format: "ELF", Class: "ELFCLASS64", ByteOrder: "ELFDATA2LSB", Machine: "EM_AARCH64", Type: "ET_DYN", Libraries: []string{}, ImportedSymbols: []string{}, ExtractedStrings: []string{}, EmbeddedURLs: []string{}, FileCapabilities: []string{}},
 	}}
+	_ = valid.BuildReviewSummary(NewCoverageSummary(1, 0, 0))
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("complete ELF metadata was rejected: %v", err)
 	}
@@ -502,8 +506,9 @@ func TestValidateELFNestedCollectionLimits(t *testing.T) {
 	base := func() Report {
 		r := validReport()
 		r.Target.FileCount, r.Target.BinaryBytes = 1, 10
-		r.Inventory = []File{{Path: "helper", Kind: "regular", Mode: "-rwxr-xr-x", Size: 10, Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "application/x-elf",
+		r.Inventory = []File{{Path: "helper", Kind: "regular", Mode: "-rwxr-xr-x", Size: 10, Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "application/x-elf", Analysis: AnalysisAnalyzed,
 			Binary: &Binary{Format: "ELF", Class: "ELFCLASS64", ByteOrder: "ELFDATA2LSB", Machine: "EM_AARCH64", Type: "ET_DYN", Libraries: []string{}, ImportedSymbols: []string{}, ExtractedStrings: []string{}, EmbeddedURLs: []string{}, FileCapabilities: []string{}}}}
+		_ = r.BuildReviewSummary(NewCoverageSummary(1, 0, 0))
 		return r
 	}
 	tests := []struct {
@@ -544,9 +549,10 @@ func TestValidateImportedLibraryLimitExactAndFirstOver(t *testing.T) {
 		r.Target.BinaryBytes = 10
 		r.Inventory = []File{{
 			Path: "helper", Kind: "regular", Mode: "-rwxr-xr-x", Size: 10, Inspected: true,
-			SHA256: strings.Repeat("a", 64), ContentType: "application/x-elf",
+			SHA256: strings.Repeat("a", 64), ContentType: "application/x-elf", Analysis: AnalysisAnalyzed,
 			Binary: &Binary{Format: "ELF", Class: "ELFCLASS64", ByteOrder: "ELFDATA2LSB", Machine: "EM_AARCH64", Type: "ET_DYN", Libraries: make([]string, count), ImportedSymbols: []string{}, ExtractedStrings: []string{}, EmbeddedURLs: []string{}, FileCapabilities: []string{}},
 		}}
+		_ = r.BuildReviewSummary(NewCoverageSummary(1, 0, 0))
 		for index := range r.Inventory[0].Binary.Libraries {
 			r.Inventory[0].Binary.Libraries[index] = fmt.Sprintf("lib-%d.so", index)
 		}
@@ -570,9 +576,10 @@ func TestValidateArchiveMetadataAndNestedLimits(t *testing.T) {
 			entries[index] = ArchiveEntry{Path: fmt.Sprintf("entry-%d", index), Kind: "file", Size: 1}
 		}
 		r.Inventory = []File{{
-			Path: "payload.zip", Kind: "regular", Mode: "-rw-------", Size: 10, Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "application/zip",
+			Path: "payload.zip", Kind: "regular", Mode: "-rw-------", Size: 10, Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "application/zip", Analysis: AnalysisAnalyzed,
 			Archive: &Archive{Format: "zip", Entries: entries, InventoryComplete: count <= MaxArchiveEntries, RetainedUncompressedBytes: int64(count)},
 		}}
+		_ = r.BuildReviewSummary(NewCoverageSummary(1, 0, 0))
 		return r
 	}
 	if err := makeReport(MaxArchiveEntries).Validate(); err != nil {

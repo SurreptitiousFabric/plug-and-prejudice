@@ -33,6 +33,8 @@ const (
 	MaxUnknownSuppressed   = 16
 	MaxEvidenceRelations   = MaxResourceEntries + (MaxFindingEntries+MaxUnknownEntries)*MaxFindingRelated
 	MaxHostileStringBytes  = 4 << 10
+	MaxEncodedReportBytes  = 16 << 20
+	MaxJSONDepth           = 64
 )
 
 type ClaimType string
@@ -40,7 +42,6 @@ type ClaimType string
 const (
 	ClaimFact      ClaimType = "fact"
 	ClaimInference ClaimType = "inference"
-	ClaimUnknown   ClaimType = "unknown"
 )
 
 type Severity string
@@ -178,18 +179,29 @@ type Manifest struct {
 }
 
 type File struct {
-	Path        string   `json:"path"`
-	Kind        string   `json:"kind"`
-	Mode        string   `json:"mode"`
-	Size        int64    `json:"size"`
-	SHA256      string   `json:"sha256,omitempty"`
-	ContentType string   `json:"contentType,omitempty"`
-	LinkTarget  string   `json:"linkTarget,omitempty"`
-	Inspected   bool     `json:"inspected"`
-	SkipReason  string   `json:"skipReason,omitempty"`
-	Binary      *Binary  `json:"binary,omitempty"`
-	Archive     *Archive `json:"archive,omitempty"`
+	Path           string              `json:"path"`
+	Kind           string              `json:"kind"`
+	Mode           string              `json:"mode"`
+	Size           int64               `json:"size"`
+	SHA256         string              `json:"sha256,omitempty"`
+	ContentType    string              `json:"contentType,omitempty"`
+	LinkTarget     string              `json:"linkTarget,omitempty"`
+	Inspected      bool                `json:"inspected"`
+	SkipReason     string              `json:"skipReason,omitempty"`
+	Analysis       AnalysisDisposition `json:"analysis"`
+	AnalysisReason string              `json:"analysisReason,omitempty"`
+	Binary         *Binary             `json:"binary,omitempty"`
+	Archive        *Archive            `json:"archive,omitempty"`
 }
+
+type AnalysisDisposition string
+
+const (
+	AnalysisNotApplicable AnalysisDisposition = "not-applicable"
+	AnalysisAnalyzed      AnalysisDisposition = "analyzed"
+	AnalysisPartial       AnalysisDisposition = "partial"
+	AnalysisUnanalyzed    AnalysisDisposition = "unanalyzed"
+)
 
 type Binary struct {
 	Format              string   `json:"format"`

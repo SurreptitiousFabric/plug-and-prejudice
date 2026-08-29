@@ -2,8 +2,9 @@
 
 Status: versioned development contract; not yet release-stable.
 
-The scanner emits one UTF-8 JSON object. The trusted broker accepts no unknown
-fields, trailing values, unsupported schema versions, invalid enum values,
+The scanner emits one UTF-8 JSON object no larger than 16 MiB and validates it
+before writing any bytes. The trusted broker accepts no duplicate or unknown
+object members, excessive nesting, trailing values, unsupported schema versions, invalid enum values,
 unsafe evidence paths, broken operation references, or contradictory
 `complete` status. The standalone scanner validates the complete object before
 writing any report bytes; the broker independently decodes and validates it
@@ -17,7 +18,9 @@ hash-derived public `PP-` references are unique across node kinds and are
 recomputed rather than trusted by the validator. Typed relationship IDs and
 endpoints are unique, bounded, and validated against the originating resource
 or finding claim. Structured provenance requires a rule ID, analyzer, analyzer
-version, and evidence source. Inventory paths are unique canonical POSIX
+version, and evidence source. Local evidence must name the trusted deterministic
+analyzer and exact scanner version; Omarchy evidence names its distinct
+analyzer. Provenance identifies an asserted producer, not truth. Inventory paths are unique canonical POSIX
 target-relative labels. `target.fileCount` equals
 the inventory length. Every finding has at least one valid evidence location;
 every resource has valid evidence and names an existing originating operation.
@@ -34,7 +37,9 @@ that start. `target.readBytes` and `target.binaryBytes` exactly equal the sizes
 of inspected non-ELF and ELF inventory entries respectively; the validator
 reconciles both totals without overflowing on hostile sizes.
 
-The validated object graph is also bounded: at most 10,000 inventory entries,
+Every JSON-visible string and map key is independently bounded by encoded JSON
+size. A structural pre-pass rejects duplicate members and nesting deeper than
+64 levels before typed decoding. The validated object graph is also bounded: at most 10,000 inventory entries,
 20,000 operations, resources, findings, and limitations respectively, 340,000
 typed relationships, and 10,000 scan errors. The deterministic producer uses a
 lower 20,000-relationship budget. These are rejection limits, not silent
@@ -63,13 +68,13 @@ scan into a reproducible or atomic filesystem snapshot.
 - `operations`: commands and other observable actions extracted from source.
 - `resources`: network, filesystem, credential, and persistence targets tied to
   originating operations.
-- `findings`: contextual security consequences with claim type, severity,
+- `findings`: contextual security consequences with `fact` or `inference` claim type, severity,
   confidence, scope, evidence, and deterministic provenance.
-- `unknowns`: unresolved runtime values with a reason, bounded textual origins,
+- `unknowns`: the only representation for unresolved behavior, with a reason, bounded textual origins,
   affected operations, withheld rule IDs, evidence, and provenance; unknowns
   do not carry severity.
 - `relationships`: typed deterministic edges from resources and
-  fact/inference/unknown findings and dedicated unknown records to supporting
+  fact/inference findings and dedicated unknown records to supporting
   operations, plus separately
   validated corroboration, disagreement, or duplication edges when multiple
   evidence sources exist.
@@ -94,8 +99,14 @@ bytes actually retained for inspection and makes omissions visible; it does not
 hash skipped file content, establish an atomic filesystem snapshot, or prove
 that the target has not changed since the scan.
 
+Each inventory record carries one authoritative analysis disposition:
+`not-applicable`, `analyzed`, `partial`, or `unanalyzed`. Partial and
+unanalyzed units require a reason. Coverage is recomputed from these records;
+inventory retention alone is not semantic analysis.
+
 Arrays are always emitted as arrays rather than `null`. A `complete` report has
-no unknowns, limitations, or errors. `incomplete` means the visible findings
+no unknowns, limitations, or errors and requires complete or genuinely
+not-applicable coverage. `incomplete` means the visible findings
 remain useful but are not exhaustive and must contain at least one unknown,
 limitation, or scan error explaining why. `error` is reserved for a structured scan result that
 could not complete and must contain at least one scan error; broker or
@@ -116,7 +127,8 @@ the report validator.
 
 ## Independent dimensions
 
-- `claim`: `fact`, `inference`, or `unknown`.
+- `claim`: `fact` or `inference`. Unknown behavior is a structurally separate
+  record without severity and cannot be represented by relabelling a finding.
 - `severity`: potential contextual impact—`critical`, `high`, `medium`, `low`,
   or `informational`.
 - `confidence`: certainty in the extraction or conclusion—`high`, `medium`, or

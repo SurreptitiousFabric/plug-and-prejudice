@@ -15,6 +15,10 @@ func (r *Report) BuildReviewSummary(coverage CoverageSummary) error {
 	if err := validateCoverageSummary(coverage); err != nil {
 		return err
 	}
+	derived := coverageFromInventory(r.Inventory)
+	if !reflect.DeepEqual(coverage, derived) {
+		return errors.New("analysis coverage does not match inventory dispositions")
+	}
 	value := deriveReviewSummary(*r, coverage)
 	r.Review = &value
 	return nil
@@ -41,9 +45,6 @@ func deriveReviewSummary(r Report, coverage CoverageSummary) ReviewSummary {
 			value.Counts.Facts++
 		case ClaimInference:
 			value.Counts.Inferences++
-		case ClaimUnknown:
-			value.Counts.UnknownBehaviors++
-			continue
 		}
 		rank := severityRank(finding.Severity)
 		if rank > impactRank {
@@ -108,7 +109,7 @@ func addConfidence(summary *ConfidenceSummary, value Confidence) {
 func confidenceForImpactReasons(findings []Finding, severity Severity) string {
 	level := "high"
 	for _, finding := range findings {
-		if finding.Claim == ClaimUnknown || finding.Severity != severity {
+		if finding.Severity != severity {
 			continue
 		}
 		if finding.Confidence == ConfidenceLow {
@@ -192,11 +193,29 @@ func validateReviewSummary(r Report) error {
 	if err := validateCoverageSummary(r.Review.AnalysisCoverage); err != nil {
 		return err
 	}
+	if !reflect.DeepEqual(r.Review.AnalysisCoverage, coverageFromInventory(r.Inventory)) {
+		return errors.New("analysis coverage does not match inventory dispositions")
+	}
 	expected := deriveReviewSummary(r, r.Review.AnalysisCoverage)
 	if !reflect.DeepEqual(*r.Review, expected) {
 		return errors.New("review summary does not match retained report evidence")
 	}
 	return nil
+}
+
+func coverageFromInventory(files []File) CoverageSummary {
+	var analyzed, partial, unanalyzed int
+	for _, file := range files {
+		switch file.Analysis {
+		case AnalysisAnalyzed:
+			analyzed++
+		case AnalysisPartial:
+			partial++
+		case AnalysisUnanalyzed:
+			unanalyzed++
+		}
+	}
+	return NewCoverageSummary(analyzed, partial, unanalyzed)
 }
 
 func validateCoverageSummary(value CoverageSummary) error {

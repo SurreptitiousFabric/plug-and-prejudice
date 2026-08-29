@@ -3,12 +3,13 @@ package analyze
 import "github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
 
 const deterministicAnalyzer = "plug-prejudice/deterministic"
+const DevelopmentAnalyzerVersion = "development"
 
 func sourceProvenance(ruleID string) report.Provenance {
 	return report.Provenance{
 		RuleID:          ruleID,
 		Analyzer:        deterministicAnalyzer,
-		AnalyzerVersion: "development",
+		AnalyzerVersion: DevelopmentAnalyzerVersion,
 		EvidenceSource:  report.EvidenceSourceTargetSource,
 	}
 }

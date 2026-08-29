@@ -104,6 +104,7 @@ func addResource(result *Result, seen map[string]bool, operation report.Operatio
 		ID:   "resource-" + operation.ID + "-" + stablePathID(kind+"-"+access+"-"+value),
 		Kind: kind, Access: access, Value: value, Sensitive: sensitive, Dynamic: dynamic,
 		Confidence: operation.Confidence, Evidence: operation.Evidence, RelatedOperationID: operation.ID,
+		Provenance: sourceProvenance("command-capability/v1"),
 	})
 	return true
 }

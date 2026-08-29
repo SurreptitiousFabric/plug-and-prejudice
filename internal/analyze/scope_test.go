@@ -47,9 +47,11 @@ func TestRuntimeReachabilityPropagatesThroughInspectableWrapper(t *testing.T) {
 	files := []report.File{{Path: "bin/helper-arm64", Kind: "regular", Binary: &report.Binary{Format: "ELF"}}}
 	result := Sources(contents)
 	Inventory(files, contents, &result)
-	finding := findingByCategory(t, result, "native-binary")
-	if finding.Scope != report.ScopeRuntime {
-		t.Fatalf("transitively referenced binary scope = %q, want runtime", finding.Scope)
+	if len(result.Unknowns) != 1 || result.Unknowns[0].Category != "native-binary" {
+		t.Fatalf("missing native-binary unknown in %#v", result.Unknowns)
+	}
+	if result.Unknowns[0].Scope != report.ScopeRuntime {
+		t.Fatalf("transitively referenced binary scope = %q, want runtime", result.Unknowns[0].Scope)
 	}
 }
 

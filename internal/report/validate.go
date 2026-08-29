@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"reflect"
 	"strings"
 )
 
@@ -15,6 +16,12 @@ import (
 // component presents it. It deliberately accepts exactly one JSON value and
 // rejects fields unknown to this version of the report contract.
 func Decode(data []byte) (Report, error) {
+	if len(data) > MaxEncodedReportBytes {
+		return Report{}, fmt.Errorf("decode report: encoded input exceeds limit %d", MaxEncodedReportBytes)
+	}
+	if err := validateJSONObjectMembers(data); err != nil {
+		return Report{}, fmt.Errorf("decode report: %w", err)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var value Report
@@ -106,6 +113,26 @@ func (r Report) Validate() error {
 		if file.Inspected && file.SkipReason != "" {
 			return fmt.Errorf("inventory file %q cannot be both inspected and skipped", file.Path)
 		}
+		switch file.Analysis {
+		case AnalysisNotApplicable:
+			if file.AnalysisReason != "" {
+				return fmt.Errorf("inventory file %q has a reason for a not-applicable analysis disposition", file.Path)
+			}
+		case AnalysisAnalyzed:
+			if !file.Inspected || file.AnalysisReason != "" {
+				return fmt.Errorf("inventory file %q analyzed disposition contradicts inspection metadata", file.Path)
+			}
+		case AnalysisPartial:
+			if !file.Inspected || file.AnalysisReason == "" {
+				return fmt.Errorf("inventory file %q partial disposition requires inspected content and a reason", file.Path)
+			}
+		case AnalysisUnanalyzed:
+			if file.AnalysisReason == "" {
+				return fmt.Errorf("inventory file %q unanalyzed disposition requires a reason", file.Path)
+			}
+		default:
+			return fmt.Errorf("inventory file %q has invalid analysis disposition %q", file.Path, file.Analysis)
+		}
 		if file.LinkTarget != "" && file.Kind != "symlink" {
 			return fmt.Errorf("inventory file %q has a link target but is not a symlink", file.Path)
 		}
@@ -177,7 +204,7 @@ func (r Report) Validate() error {
 		if err := addReference(referenceKinds, referenceProvenance, operation.Reference, NodeOperation, operation.Provenance); err != nil {
 			return fmt.Errorf("operation %q: %w", operation.ID, err)
 		}
-		if err := validateProvenance(operation.Provenance); err != nil {
+		if err := validateProvenance(operation.Provenance, r.Scan.ScannerVersion); err != nil {
 			return fmt.Errorf("operation %q: %w", operation.ID, err)
 		}
 		if len(operation.Arguments) > MaxOperationArguments {
@@ -202,7 +229,7 @@ func (r Report) Validate() error {
 		if err := addReference(referenceKinds, referenceProvenance, resource.Reference, NodeResource, resource.Provenance); err != nil {
 			return fmt.Errorf("resource %q: %w", resource.ID, err)
 		}
-		if err := validateProvenance(resource.Provenance); err != nil {
+		if err := validateProvenance(resource.Provenance, r.Scan.ScannerVersion); err != nil {
 			return fmt.Errorf("resource %q: %w", resource.ID, err)
 		}
 		if err := validateScopeConfidence(resource.Scope, resource.Confidence); err != nil {
@@ -230,7 +257,7 @@ func (r Report) Validate() error {
 		if err := addReference(referenceKinds, referenceProvenance, finding.Reference, NodeFinding, finding.Provenance); err != nil {
 			return fmt.Errorf("finding %q: %w", finding.ID, err)
 		}
-		if err := validateProvenance(finding.Provenance); err != nil {
+		if err := validateProvenance(finding.Provenance, r.Scan.ScannerVersion); err != nil {
 			return fmt.Errorf("finding %q: %w", finding.ID, err)
 		}
 		if len(finding.Evidence) == 0 {
@@ -239,7 +266,7 @@ func (r Report) Validate() error {
 		if len(finding.Evidence) > MaxFindingEvidence || len(finding.Related) > MaxFindingRelated {
 			return fmt.Errorf("finding %q evidence or relationships exceed structural limits", finding.ID)
 		}
-		if !oneOf(string(finding.Claim), string(ClaimFact), string(ClaimInference), string(ClaimUnknown)) {
+		if !oneOf(string(finding.Claim), string(ClaimFact), string(ClaimInference)) {
 			return fmt.Errorf("finding %q has invalid claim %q", finding.ID, finding.Claim)
 		}
 		if !oneOf(string(finding.Severity), string(SeverityCritical), string(SeverityHigh), string(SeverityMedium), string(SeverityLow), string(SeverityInformational)) {
@@ -258,6 +285,12 @@ func (r Report) Validate() error {
 				return fmt.Errorf("finding %q references missing operation %q", finding.ID, related)
 			}
 		}
+		if finding.Claim == ClaimInference && len(finding.Related) == 0 {
+			return fmt.Errorf("inference %q has no declared supporting operation", finding.ID)
+		}
+		if duplicateString(finding.Related) {
+			return fmt.Errorf("finding %q repeats a supporting operation", finding.ID)
+		}
 	}
 	unknowns := make(map[string]struct{}, len(r.Unknowns))
 	for _, unknown := range r.Unknowns {
@@ -271,7 +304,7 @@ func (r Report) Validate() error {
 		if err := addReference(referenceKinds, referenceProvenance, unknown.Reference, NodeUnknown, unknown.Provenance); err != nil {
 			return fmt.Errorf("unknown %q: %w", unknown.ID, err)
 		}
-		if err := validateProvenance(unknown.Provenance); err != nil {
+		if err := validateProvenance(unknown.Provenance, r.Scan.ScannerVersion); err != nil {
 			return fmt.Errorf("unknown %q: %w", unknown.ID, err)
 		}
 		if !oneOf(string(unknown.Reason), string(UnknownDynamicValue), string(UnknownUnsupportedSyntax), string(UnknownParserFailure), string(UnknownBudgetExhaustion), string(UnknownUnreachableSource), string(UnknownNativeBehavior), string(UnknownUnresolvedFlow)) {
@@ -283,6 +316,9 @@ func (r Report) Validate() error {
 		if len(unknown.Evidence) == 0 || len(unknown.Evidence) > MaxUnknownEvidence || len(unknown.Origins) > MaxUnknownOrigins ||
 			len(unknown.AffectedOperations) > MaxUnknownAffected || len(unknown.SuppressedRules) > MaxUnknownSuppressed {
 			return fmt.Errorf("unknown %q evidence, origins, affected operations, or suppressed rules exceed structural requirements", unknown.ID)
+		}
+		if unknown.Origins == nil || unknown.AffectedOperations == nil || unknown.SuppressedRules == nil {
+			return fmt.Errorf("unknown %q origin, affected-operation, and suppressed-rule collections must be JSON arrays", unknown.ID)
 		}
 		for _, evidence := range unknown.Evidence {
 			if err := validateEvidence(evidence); err != nil {
@@ -345,6 +381,9 @@ func (r Report) Validate() error {
 		if len(r.Unknowns) != 0 || len(r.Limitations) != 0 || len(r.Errors) != 0 {
 			return errors.New("complete report cannot contain unknowns, limitations, or scan errors")
 		}
+		if r.Review.AnalysisCoverage.Level != "complete" && r.Review.AnalysisCoverage.Level != "not-applicable" {
+			return errors.New("complete report requires complete analysis coverage")
+		}
 	case StatusIncomplete:
 		if len(r.Unknowns) == 0 && len(r.Limitations) == 0 && len(r.Errors) == 0 {
 			return errors.New("incomplete report must explain itself with an unknown, limitation, or scan error")
@@ -367,6 +406,9 @@ func validateHostileStrings(r Report) error {
 			return fmt.Errorf("%s encoded length exceeds limit %d", label, MaxHostileStringBytes)
 		}
 		return nil
+	}
+	if err := validateEveryReportString(reflect.ValueOf(r), "report", check); err != nil {
+		return err
 	}
 	values := []struct{ label, value string }{{"target display name", r.Target.DisplayName}}
 	if review := r.Review; review != nil {
@@ -451,6 +493,49 @@ func validateHostileStrings(r Report) error {
 	return nil
 }
 
+func validateEveryReportString(value reflect.Value, label string, check func(string, string) error) error {
+	if !value.IsValid() {
+		return nil
+	}
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return nil
+		}
+		return validateEveryReportString(value.Elem(), label, check)
+	}
+	switch value.Kind() {
+	case reflect.String:
+		return check(label, value.String())
+	case reflect.Struct:
+		typeInfo := value.Type()
+		for index := 0; index < value.NumField(); index++ {
+			if typeInfo.Field(index).PkgPath != "" {
+				continue
+			}
+			if err := validateEveryReportString(value.Field(index), label+"."+typeInfo.Field(index).Name, check); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for index := 0; index < value.Len(); index++ {
+			if err := validateEveryReportString(value.Index(index), label, check); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		iterator := value.MapRange()
+		for iterator.Next() {
+			if err := validateEveryReportString(iterator.Key(), label+" key", check); err != nil {
+				return err
+			}
+			if err := validateEveryReportString(iterator.Value(), label+" value", check); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func validateCollectionBounds(r Report) error {
 	collections := []struct {
 		name  string
@@ -486,14 +571,35 @@ func addReference(kinds map[string]NodeKind, provenance map[string]Provenance, r
 	return nil
 }
 
-func validateProvenance(value Provenance) error {
+func validateProvenance(value Provenance, scannerVersion string) error {
 	if value.RuleID == "" || value.Analyzer == "" || value.AnalyzerVersion == "" {
 		return errors.New("rule ID, analyzer, and analyzer version provenance are required")
 	}
 	if !oneOf(string(value.EvidenceSource), string(EvidenceSourceTargetSource), string(EvidenceSourceInventoryMetadata), string(EvidenceSourceOmarchyAudit)) {
 		return fmt.Errorf("invalid evidence source %q", value.EvidenceSource)
 	}
+	switch value.EvidenceSource {
+	case EvidenceSourceTargetSource, EvidenceSourceInventoryMetadata:
+		if value.Analyzer != "plug-prejudice/deterministic" || value.AnalyzerVersion != scannerVersion {
+			return errors.New("local evidence provenance does not match the trusted scanner identity")
+		}
+	case EvidenceSourceOmarchyAudit:
+		if value.Analyzer != "omarchy/plugin-audit" {
+			return errors.New("Omarchy evidence provenance has an invalid analyzer identity")
+		}
+	}
 	return nil
+}
+
+func duplicateString(values []string) bool {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			return true
+		}
+		seen[value] = struct{}{}
+	}
+	return false
 }
 
 func validateRelationships(r Report, kinds map[string]NodeKind, provenance map[string]Provenance) error {
@@ -509,8 +615,6 @@ func validateRelationships(r Report, kinds map[string]NodeKind, provenance map[s
 		kind := RelationshipEstablishedBy
 		if finding.Claim == ClaimInference {
 			kind = RelationshipInferredFrom
-		} else if finding.Claim == ClaimUnknown {
-			kind = RelationshipUnknownBecause
 		}
 		for _, related := range finding.Related {
 			required[relationshipID(kind, NodeFinding, finding.Reference, NodeOperation, operationReferences[related])] = false
@@ -561,6 +665,9 @@ func validateRelationships(r Report, kinds map[string]NodeKind, provenance map[s
 				return fmt.Errorf("relationship %q does not match the unknown's declared affected operation", relationship.ID)
 			}
 		case RelationshipCorroborates, RelationshipDisagreesWith:
+			if relationship.FromKind != relationship.ToKind {
+				return fmt.Errorf("relationship %q compares different node kinds", relationship.ID)
+			}
 			if relationship.From > relationship.To {
 				return fmt.Errorf("relationship %q comparison endpoints are not canonical", relationship.ID)
 			}
@@ -573,6 +680,9 @@ func validateRelationships(r Report, kinds map[string]NodeKind, provenance map[s
 			}
 			comparisonPairs[pair] = relationship.Type
 		case RelationshipDuplicates:
+			if relationship.FromKind != relationship.ToKind {
+				return fmt.Errorf("relationship %q marks different node kinds as duplicates", relationship.ID)
+			}
 			if relationship.From > relationship.To {
 				return fmt.Errorf("relationship %q duplicate endpoints are not canonical", relationship.ID)
 			}

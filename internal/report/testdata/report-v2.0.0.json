@@ -32,10 +32,10 @@
   },
   "review": {
     "securityImpact": {"level": "low", "reasons": [{"reference": "PP-093D9434CC0F0067", "title": "May retrieve plugin data", "scope": "runtime"}]},
-    "evidenceConfidence": {"level": "medium", "high": 4, "medium": 1, "low": 1, "reasons": [{"reference": "PP-093D9434CC0F0067", "title": "May retrieve plugin data", "scope": "runtime"}]},
+    "evidenceConfidence": {"level": "medium", "high": 4, "medium": 1, "low": 0, "reasons": [{"reference": "PP-093D9434CC0F0067", "title": "May retrieve plugin data", "scope": "runtime"}]},
     "analysisCoverage": {"level": "limited", "denominator": "retained supported executable, configuration, archive, and binary artifact files", "analyzedUnits": 0, "partialUnits": 1, "unanalyzedUnits": 0, "totalUnits": 1, "percentage": 0},
     "unknownBehavior": {"level": "high", "unknowns": 1, "limitations": 1, "errors": 1, "reasons": [{"title": "Scan error: fixture-error"}, {"reference": "PP-83785E428C9A0E0E", "title": "Executable cannot be resolved statically", "scope": "runtime"}, {"title": "Analysis limitation: fixture-limitation", "scope": "runtime"}]},
-    "counts": {"facts": 3, "inferences": 1, "unknownBehaviors": 2},
+    "counts": {"facts": 3, "inferences": 1, "unknownBehaviors": 1},
     "mainReasons": [{"reference": "PP-093D9434CC0F0067", "title": "May retrieve plugin data", "scope": "runtime"}, {"title": "Scan error: fixture-error"}, {"reference": "PP-83785E428C9A0E0E", "title": "Executable cannot be resolved statically", "scope": "runtime"}, {"title": "Analysis limitation: fixture-limitation", "scope": "runtime"}]
   },
   "inventory": [
@@ -46,7 +46,9 @@
       "size": 42,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "contentType": "text/plain",
-      "inspected": true
+      "inspected": true,
+      "analysis": "partial",
+      "analysisReason": "dynamic command flow remains unresolved"
     }
   ],
   "operations": [
@@ -66,7 +68,7 @@
         "operation": "curl https://example.invalid/data",
         "excerpt": "command: [\"curl\", \"https://example.invalid/data\"]"
       },
-      "provenance": {"ruleId": "fixture-operation/v1", "analyzer": "fixture", "analyzerVersion": "1.0.0", "evidenceSource": "target-source"}
+      "provenance": {"ruleId": "fixture-operation/v1", "analyzer": "plug-prejudice/deterministic", "analyzerVersion": "fixture", "evidenceSource": "target-source"}
     }
   ],
   "resources": [
@@ -82,7 +84,7 @@
       "confidence": "high",
       "evidence": {"path": "Panel.qml", "lineStart": 1},
       "relatedOperationId": "operation-1",
-      "provenance": {"ruleId": "fixture-resource/v1", "analyzer": "fixture", "analyzerVersion": "1.0.0", "evidenceSource": "target-source"}
+      "provenance": {"ruleId": "fixture-resource/v1", "analyzer": "plug-prejudice/deterministic", "analyzerVersion": "fixture", "evidenceSource": "target-source"}
     }
   ],
   "findings": [
@@ -98,7 +100,7 @@
       "explanation": "The literal command names the domain.",
       "evidence": [{"path": "Panel.qml", "lineStart": 1}],
       "relatedOperationIds": ["operation-1"],
-      "provenance": {"ruleId": "fixture-fact/v1", "analyzer": "fixture", "analyzerVersion": "1.0.0", "evidenceSource": "target-source"}
+      "provenance": {"ruleId": "fixture-fact/v1", "analyzer": "plug-prejudice/deterministic", "analyzerVersion": "fixture", "evidenceSource": "target-source"}
     },
     {
       "id": "finding-inference",
@@ -112,21 +114,7 @@
       "explanation": "The purpose of the request cannot be established statically.",
       "evidence": [{"path": "Panel.qml", "lineStart": 1}],
       "relatedOperationIds": ["operation-1"],
-      "provenance": {"ruleId": "fixture-inference/v1", "analyzer": "fixture", "analyzerVersion": "1.0.0", "evidenceSource": "target-source"}
-    },
-    {
-      "id": "finding-unknown",
-      "reference": "PP-3FE0E6B94731AE7C",
-      "claim": "unknown",
-      "severity": "medium",
-      "confidence": "low",
-      "category": "coverage",
-      "scope": "unknown",
-      "title": "Runtime response behavior is unknown",
-      "explanation": "Static analysis does not observe the response.",
-      "evidence": [{"path": "Panel.qml", "lineStart": 1}],
-      "relatedOperationIds": ["operation-1"],
-      "provenance": {"ruleId": "fixture-unknown/v1", "analyzer": "fixture", "analyzerVersion": "1.0.0", "evidenceSource": "target-source"}
+      "provenance": {"ruleId": "fixture-inference/v1", "analyzer": "plug-prejudice/deterministic", "analyzerVersion": "fixture", "evidenceSource": "target-source"}
     }
   ],
   "unknowns": [
@@ -143,12 +131,11 @@
       "origins": [{"kind": "use-site", "name": "Process.command", "evidence": {"path": "Panel.qml", "lineStart": 1, "lineEnd": 1, "operation": "root.command"}}],
       "affectedOperationIds": ["operation-1"],
       "suppressedRuleIds": ["command-capability/v1"],
-      "provenance": {"ruleId": "fixture-explicit-unknown/v1", "analyzer": "fixture", "analyzerVersion": "1.0.0", "evidenceSource": "target-source"}
+      "provenance": {"ruleId": "fixture-explicit-unknown/v1", "analyzer": "plug-prejudice/deterministic", "analyzerVersion": "fixture", "evidenceSource": "target-source"}
     }
   ],
   "relationships": [
     {"id": "PE-04E5E38F44A4D304", "type": "established-by", "fromKind": "finding", "from": "PP-576030782ED8AEAA", "toKind": "operation", "to": "PP-B4453F4DA886002A"},
-    {"id": "PE-08F0312AF82ABC35", "type": "unknown-because", "fromKind": "finding", "from": "PP-3FE0E6B94731AE7C", "toKind": "operation", "to": "PP-B4453F4DA886002A"},
     {"id": "PE-3649D6F283EFAA7E", "type": "unknown-because", "fromKind": "unknown", "from": "PP-83785E428C9A0E0E", "toKind": "operation", "to": "PP-B4453F4DA886002A"},
     {"id": "PE-8CFE8D79BD94140B", "type": "derived-from", "fromKind": "resource", "from": "PP-0F5A7495E21AF632", "toKind": "operation", "to": "PP-B4453F4DA886002A"},
     {"id": "PE-CA718425628C6675", "type": "inferred-from", "fromKind": "finding", "from": "PP-093D9434CC0F0067", "toKind": "operation", "to": "PP-B4453F4DA886002A"}

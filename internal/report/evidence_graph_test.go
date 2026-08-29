@@ -15,7 +15,6 @@ func graphReport(t *testing.T) Report {
 	r.Findings = []Finding{
 		{ID: "finding-fact", Claim: ClaimFact, Severity: SeverityInformational, Confidence: ConfidenceHigh, Category: "network", Scope: ScopeRuntime, Title: "Network", Explanation: "Names a domain.", Evidence: []Evidence{evidence}, Related: []string{"operation-1"}, Provenance: testProvenance},
 		{ID: "finding-inference", Claim: ClaimInference, Severity: SeverityLow, Confidence: ConfidenceMedium, Category: "purpose", Scope: ScopeRuntime, Title: "Purpose", Explanation: "Purpose is inferred.", Evidence: []Evidence{evidence}, Related: []string{"operation-1"}, Provenance: testProvenance},
-		{ID: "finding-unknown", Claim: ClaimUnknown, Severity: SeverityMedium, Confidence: ConfidenceHigh, Category: "coverage", Scope: ScopeRuntime, Title: "Unknown", Explanation: "Behavior is unresolved.", Evidence: []Evidence{evidence}, Related: []string{"operation-1"}, Provenance: testProvenance},
 	}
 	r.Status = StatusIncomplete
 	r.Unknowns = []Unknown{{ID: "unknown-command", Category: "unresolved-command", Reason: UnknownDynamicValue, Scope: ScopeRuntime, Confidence: ConfidenceHigh,
@@ -33,7 +32,7 @@ func TestBuildEvidenceGraphAssignsStableReferencesAndTypedEdges(t *testing.T) {
 	if err := r.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, reference := range []string{r.Operations[0].Reference, r.Resources[0].Reference, r.Findings[0].Reference, r.Findings[1].Reference, r.Findings[2].Reference, r.Unknowns[0].Reference} {
+	for _, reference := range []string{r.Operations[0].Reference, r.Resources[0].Reference, r.Findings[0].Reference, r.Findings[1].Reference, r.Unknowns[0].Reference} {
 		if !strings.HasPrefix(reference, "PP-") || len(reference) != len("PP-")+16 {
 			t.Fatalf("invalid public reference %q", reference)
 		}
@@ -99,6 +98,8 @@ func TestValidateRejectsMissingForgedAndMistypedRelationships(t *testing.T) {
 func TestCorroborationAndDuplicationRequireCorrectEvidenceSources(t *testing.T) {
 	r := graphReport(t)
 	external := testProvenance
+	external.Analyzer = "omarchy/plugin-audit"
+	external.AnalyzerVersion = "pr8439-test"
 	external.EvidenceSource = EvidenceSourceOmarchyAudit
 	r.Findings = append(r.Findings, Finding{ID: "external-finding", Claim: ClaimFact, Severity: SeverityInformational, Confidence: ConfidenceHigh, Category: "network", Scope: ScopeRuntime, Title: "External network observation", Explanation: "Imported bounded evidence.", Evidence: []Evidence{{Path: "omarchy-audit.json"}}, Provenance: external})
 	if err := r.BuildEvidenceGraph(); err != nil {
@@ -146,6 +147,8 @@ func TestCorroborationAndDuplicationRequireCorrectEvidenceSources(t *testing.T) 
 func TestAddComparisonResolvesInternalIDsAndCanonicalizesEndpoints(t *testing.T) {
 	r := graphReport(t)
 	external := testProvenance
+	external.Analyzer = "omarchy/plugin-audit"
+	external.AnalyzerVersion = "pr8439-test"
 	external.EvidenceSource = EvidenceSourceOmarchyAudit
 	r.Operations = append(r.Operations, Operation{ID: "external-operation", Category: "omarchy-audit-command", Command: "curl", Scope: ScopeUnknown, Confidence: ConfidenceHigh, Evidence: Evidence{Path: "omarchy-audit.json"}, Provenance: external})
 	if err := r.BuildEvidenceGraph(); err != nil {

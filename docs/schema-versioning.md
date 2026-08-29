@@ -5,7 +5,8 @@ the first public release.
 
 The scanner's JSON report is a trust boundary, not an informal serialization.
 Producers emit exactly one schema version and consumers accept only versions
-they explicitly understand. Unknown fields, unknown enum values, trailing JSON,
+they explicitly understand. Duplicate or unknown fields, unknown enum values,
+excessive nesting, trailing JSON,
 and unsupported schema versions fail closed.
 
 ## Version number
@@ -47,8 +48,9 @@ network schema lookup. A report is self-contained and local.
 ## Golden fixture
 
 `internal/report/testdata/report-v2.0.0.json` is a representative conforming
-document covering every top-level collection, all fact/inference/unknown claim
-types, structured provenance, typed evidence links, limitations, errors, and
+document covering every top-level collection, fact/inference findings,
+dedicated unknown records, structured provenance, typed evidence links,
+inventory-derived coverage dispositions, limitations, errors, and
 sandbox resource metadata. It
 is compatibility evidence, not a claim that every possible document shape is
 represented. Focused validator tests remain authoritative for invalid cases.

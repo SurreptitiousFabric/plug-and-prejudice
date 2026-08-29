@@ -16,6 +16,7 @@ type Result struct {
 	Operations  []report.Operation
 	Resources   []report.Resource
 	Findings    []report.Finding
+	Unknowns    []report.Unknown
 	Limitations []report.Limitation
 }
 
@@ -87,7 +88,8 @@ func analyzeShell(name string, data []byte, result *Result) {
 			ID:       fmt.Sprintf("op-%s-%d-%d", stablePathID(name), line, len(result.Operations)+1),
 			Category: "process-execution", Command: command, Arguments: arguments,
 			Dynamic: dynamic, Confidence: report.ConfidenceHigh,
-			Evidence: report.Evidence{Path: name, LineStart: line, LineEnd: int(call.End().Line()), Operation: printNode(call), Excerpt: sourceLine(data, line)},
+			Evidence:   report.Evidence{Path: name, LineStart: line, LineEnd: int(call.End().Line()), Operation: printNode(call), Excerpt: sourceLine(data, line)},
+			Provenance: sourceProvenance("shell-operation-extraction/v1"),
 		}
 		if command == "" {
 			op.Command = "<dynamic>"
