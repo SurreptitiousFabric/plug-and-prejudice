@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -33,6 +34,36 @@ func main() {
 		go func() { _, _ = os.Stderr.Write(make([]byte, 1<<20)); done <- struct{}{} }()
 		<-done
 		<-done
+		return
+	}
+	if *displayName == "hold-stdout" || *displayName == "hold-stderr" {
+		signal.Ignore(syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+		for {
+			time.Sleep(time.Second)
+		}
+	}
+	if *displayName == "stdout-overflow-stderr-held" || *displayName == "stderr-overflow-stdout-held" {
+		heldMode := "hold-stderr"
+		if *displayName == "stderr-overflow-stdout-held" {
+			heldMode = "hold-stdout"
+		}
+		child := exec.Command("/app/plug-prejudice", "--target", "/target", "--display-name", heldMode, "--sandboxed", "--resource-limited")
+		child.Stdin = os.Stdin
+		if heldMode == "hold-stderr" {
+			child.Stderr = os.Stderr
+			child.Stdout = io.Discard
+		} else {
+			child.Stdout = os.Stdout
+			child.Stderr = io.Discard
+		}
+		if err := child.Start(); err != nil {
+			panic(err)
+		}
+		if *displayName == "stdout-overflow-stderr-held" {
+			_, _ = os.Stdout.Write(make([]byte, 17<<20))
+		} else {
+			_, _ = os.Stderr.Write(make([]byte, 1<<20))
+		}
 		return
 	}
 	if *displayName == "descendant-child" {

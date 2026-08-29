@@ -66,14 +66,24 @@ PWD=/target
 TMPDIR=/tmp
 ```
 
+The outer broker also does not pass its user-session environment to
+`systemd-run` or `systemctl`. It validates the euid-owned, non-group/world
+accessible `/run/user/<euid>` directory and supplies only that
+`XDG_RUNTIME_DIR`, fixed C locale, and fixed systemd no-pager/no-color/no-URL
+settings. In particular, loader, D-Bus-address override, `SYSTEMD_*` override,
+`XDG_CONFIG_*`, pager, and Go-runtime variables are not inherited.
+
 The scoped broker verifies the actual `RuntimeMaxUSec` reported for its exact
 randomized unit in addition to reading its cgroup memory, swap, task, and CPU
 files. The scope has a verified maximum 35-second lifetime and Bubblewrap
 retains an independent 30-second wall-clock timeout. Subprocess waits and pipe
 closure have a two-second delay bound. After the scoped broker exits, the outer
-broker asks the trusted systemd manager to SIGKILL the exact whole scope, with a
-three-second teardown deadline; an already inactive/collected unit is accepted
-only as an empty scope. The broker imposes a 16 MiB report limit and a
+broker asks the trusted systemd manager to SIGKILL the exact whole scope, then
+polls the validated cgroup until `cgroup.events` reports `populated 0` or the
+cgroup has been collected, all within a three-second teardown deadline. A
+collected unit or an inactive/failed unit with no control-group path is accepted
+as already empty; acceptance of `systemctl kill --no-block` is not sufficient.
+The broker imposes a 16 MiB report limit and a
 64 KiB diagnostic limit. Scanner-level limits currently include 10,000 entries,
 32 directory levels, 2 MiB per source file, 32 MiB total retained source, 64 MiB
 per ELF file, and 128 MiB total ELF input. Source and binary budgets are
@@ -106,7 +116,9 @@ The test is run both normally and with Go's race detector. Additional tests
 verify the live systemd scope from inside its cgroup, reject missing, unlimited,
 or weaker cgroup/runtime controls, trigger real memory and task exhaustion,
 terminate a surviving descendant at scope teardown, bound a descendant holding
-output descriptors, reject simultaneous stdout/stderr exhaustion, deny cgroup
+output descriptors, reject simultaneous and asymmetric stdout/stderr
+exhaustion (including a retained opposite pipe), exclude hostile inherited
+environment overrides from live systemd operations, deny cgroup
 migration and a nested user namespace, and prove host session sockets are absent.
 
 ## Non-claims
@@ -118,3 +130,7 @@ Root, kernel, package-manager, or systemd-manager compromise is outside the
 attacker model. Production scanner immutability relies on ordinary root-owned
 installation permissions; development-mode scanner execution makes no such
 production claim.
+The broker also assumes it is launched in the real host user and mount
+namespaces. Starting it inside an attacker-constructed namespace with forged
+views of `/usr`, `/run`, procfs, or cgroupfs is outside the plugin-content threat
+model.

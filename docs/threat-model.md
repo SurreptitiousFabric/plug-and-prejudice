@@ -57,6 +57,13 @@ process rlimits disable core dumps and cap open descriptors. The broker fails
 closed if the user manager or cgroup-v2 controls cannot establish and prove the
 policy.
 
+Trusted systemd tools receive a validated minimal environment: a checked
+`/run/user/<euid>` location plus fixed locale and presentation controls. The
+broker does not inherit loader, D-Bus override, systemd override, pager,
+configuration, or Go-runtime variables into these executions. Whole-scope
+teardown observes the exact cgroup become unpopulated or collected; an accepted
+asynchronous kill request alone is not completion evidence.
+
 Plugin listing is also performed only after this verification and is incremental
 and bounded. The production scanner and all three containment executables are
 root-owned, non-group/world-writable pinned inodes. The selected plugin is
@@ -120,5 +127,8 @@ payload before disclosure.
 - A compromised build/release channel can replace the reviewer itself.
 - Root, kernel, package-manager, or systemd-manager compromise can replace
   trusted installed components and is outside the plugin attacker model.
+- Launching the broker inside attacker-controlled user/mount namespaces that
+  forge the apparent `/usr`, `/run`, procfs, or cgroupfs view is outside the
+  supported host-session assumption.
 
 These risks must remain visible in user-facing reports and release documentation.

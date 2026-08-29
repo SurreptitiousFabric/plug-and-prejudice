@@ -3,6 +3,7 @@ package resource
 import (
 	"context"
 	"errors"
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,10 @@ import (
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
 )
+
+var resourceHelper = flag.String("resource-helper", "", "internal live resource test mode")
+var resourceUnit = flag.String("resource-unit", "", "internal live resource test unit")
+var descendantPID = flag.String("descendant-pid", "", "internal live resource test pid file")
 
 func TestArgumentsContainEveryApprovedLimit(t *testing.T) {
 	unit := "plug-prejudice-0123456789abcdef01234567.scope"
@@ -112,16 +117,100 @@ func TestVerifyRuntimeMaxAcceptsExactAndRejectsMissingUnlimitedOrWeak(t *testing
 	}
 }
 
+func TestUserManagerEnvironmentDoesNotInheritHostileSessionValues(t *testing.T) {
+	for _, assignment := range []string{
+		"LD_PRELOAD=/tmp/attacker.so",
+		"DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/attacker-bus",
+		"SYSTEMD_PAGER=/tmp/attacker-pager",
+		"SYSTEMD_COLORS=1",
+		"XDG_CONFIG_HOME=/tmp/attacker-config",
+		"GODEBUG=execerrdot=0",
+	} {
+		parts := strings.SplitN(assignment, "=", 2)
+		t.Setenv(parts[0], parts[1])
+	}
+	environment, err := userManagerEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"XDG_RUNTIME_DIR=/run/user/" + strconv.Itoa(os.Geteuid()),
+		"LANG=C", "LC_ALL=C", "SYSTEMD_PAGER=cat", "SYSTEMD_COLORS=0", "SYSTEMD_URLIFY=0",
+	}
+	if strings.Join(environment, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("trusted environment = %q, want %q", environment, want)
+	}
+}
+
+func TestParseCgroupPopulatedRejectsMissingDuplicateMalformedAndOversized(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  bool
+	}{
+		{value: "populated 0\nfrozen 0\n", want: false},
+		{value: "populated 1\nfrozen 0\n", want: true},
+	} {
+		got, err := parseCgroupPopulated([]byte(test.value))
+		if err != nil || got != test.want {
+			t.Fatalf("parseCgroupPopulated(%q) = %v, %v", test.value, got, err)
+		}
+	}
+	for _, value := range []string{"", "frozen 0", "populated max", "populated 0\npopulated 1", strings.Repeat("x", 4097)} {
+		if _, err := parseCgroupPopulated([]byte(value)); err == nil {
+			t.Errorf("parseCgroupPopulated accepted %q", value)
+		}
+	}
+}
+
+func TestWaitCgroupEmptyRequiresObservedEmptyState(t *testing.T) {
+	directory := t.TempDir()
+	events := filepath.Join(directory, "cgroup.events")
+	if err := os.WriteFile(events, []byte("populated 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() { done <- waitCgroupEmpty(ctx, directory) }()
+	select {
+	case err := <-done:
+		t.Fatalf("returned before the cgroup was empty: %v", err)
+	case <-time.After(75 * time.Millisecond):
+	}
+	replacement := filepath.Join(directory, "replacement.events")
+	if err := os.WriteFile(replacement, []byte("populated 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, events); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("waitCgroupEmpty() = %v", err)
+	}
+}
+
+func TestWaitCgroupEmptyFailsClosedAtDeadline(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "cgroup.events"), []byte("populated 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	if err := waitCgroupEmpty(ctx, directory); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waitCgroupEmpty() = %v, want deadline exceeded", err)
+	}
+}
+
 func TestLiveSystemdScopeEnforcesVerifiableControls(t *testing.T) {
-	if os.Getenv("PLUG_PREJUDICE_RESOURCE_HELPER") == "1" {
+	if helperArgument("resource-helper") == "verify" {
 		manager, err := DefaultManager()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := manager.Verify(os.Getenv("PLUG_PREJUDICE_RESOURCE_UNIT")); err != nil {
+		if err := manager.Verify(helperArgument("resource-unit")); err != nil {
 			t.Fatal(err)
 		}
-		if err := manager.VerifyRuntime(context.Background(), os.Getenv("PLUG_PREJUDICE_RESOURCE_UNIT")); err != nil {
+		if err := manager.VerifyRuntime(context.Background(), helperArgument("resource-unit")); err != nil {
 			t.Fatal(err)
 		}
 		return
@@ -144,15 +233,19 @@ func TestLiveSystemdScopeEnforcesVerifiableControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PLUG_PREJUDICE_RESOURCE_HELPER", "1")
-	t.Setenv("PLUG_PREJUDICE_RESOURCE_UNIT", unit)
-	if err := manager.Run(context.Background(), unit, executable, []string{"-test.run=^TestLiveSystemdScopeEnforcesVerifiableControls$"}); err != nil {
+	// These values would redirect or inject into inherited systemd tools. The
+	// live scope must still use the validated real user-manager connection.
+	t.Setenv("LD_PRELOAD", "/definitely/missing/attacker.so")
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/definitely/missing/attacker-bus")
+	t.Setenv("SYSTEMD_PAGER", "/definitely/missing/attacker-pager")
+	t.Setenv("XDG_CONFIG_HOME", "/definitely/missing/attacker-config")
+	if err := manager.Run(context.Background(), unit, executable, []string{"-test.run=^TestLiveSystemdScopeEnforcesVerifiableControls$", "-resource-helper=verify", "-resource-unit=" + unit}); err != nil {
 		t.Fatalf("live resource scope: %v", err)
 	}
 }
 
 func TestLiveSystemdScopeEnforcesMemoryMax(t *testing.T) {
-	if os.Getenv("PLUG_PREJUDICE_RESOURCE_HELPER") == "memory" {
+	if helperArgument("resource-helper") == "memory" {
 		allocation := make([]byte, 320<<20)
 		for index := 0; index < len(allocation); index += 4096 {
 			allocation[index] = 1
@@ -161,14 +254,13 @@ func TestLiveSystemdScopeEnforcesMemoryMax(t *testing.T) {
 		os.Exit(99)
 	}
 	manager, unit, executable := liveScopeTest(t)
-	t.Setenv("PLUG_PREJUDICE_RESOURCE_HELPER", "memory")
-	if err := manager.Run(context.Background(), unit, executable, []string{"-test.run=^TestLiveSystemdScopeEnforcesMemoryMax$"}); err == nil {
+	if err := manager.Run(context.Background(), unit, executable, []string{"-test.run=^TestLiveSystemdScopeEnforcesMemoryMax$", "-resource-helper=memory"}); err == nil {
 		t.Fatal("memory exhaustion survived the systemd scope")
 	}
 }
 
 func TestLiveSystemdScopeEnforcesTasksMax(t *testing.T) {
-	if os.Getenv("PLUG_PREJUDICE_RESOURCE_HELPER") == "tasks" {
+	if helperArgument("resource-helper") == "tasks" {
 		var children []*exec.Cmd
 		denied := false
 		for range policy.TasksMax * 2 {
@@ -189,32 +281,29 @@ func TestLiveSystemdScopeEnforcesTasksMax(t *testing.T) {
 		return
 	}
 	manager, unit, executable := liveScopeTest(t)
-	t.Setenv("PLUG_PREJUDICE_RESOURCE_HELPER", "tasks")
-	if err := manager.Run(context.Background(), unit, executable, []string{"-test.run=^TestLiveSystemdScopeEnforcesTasksMax$"}); err != nil {
+	if err := manager.Run(context.Background(), unit, executable, []string{"-test.run=^TestLiveSystemdScopeEnforcesTasksMax$", "-resource-helper=tasks"}); err != nil {
 		t.Fatalf("task-limit helper failed: %v", err)
 	}
 }
 
 func TestLiveSystemdScopeKillsSurvivingDescendant(t *testing.T) {
-	if os.Getenv("PLUG_PREJUDICE_RESOURCE_HELPER") == "descendant" {
+	if helperArgument("resource-helper") == "descendant" {
 		child := exec.Command("/usr/bin/sleep", "30")
 		child.Stdout = os.Stdout
 		child.Stderr = os.Stderr
 		if err := child.Start(); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(os.Getenv("PLUG_PREJUDICE_DESCENDANT_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+		if err := os.WriteFile(helperArgument("descendant-pid"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return
 	}
 	manager, unit, executable := liveScopeTest(t)
 	pidFile := filepath.Join(t.TempDir(), "descendant.pid")
-	t.Setenv("PLUG_PREJUDICE_RESOURCE_HELPER", "descendant")
-	t.Setenv("PLUG_PREJUDICE_DESCENDANT_PID", pidFile)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	_ = manager.Run(ctx, unit, executable, []string{"-test.run=^TestLiveSystemdScopeKillsSurvivingDescendant$"})
+	_ = manager.Run(ctx, unit, executable, []string{"-test.run=^TestLiveSystemdScopeKillsSurvivingDescendant$", "-resource-helper=descendant", "-descendant-pid=" + pidFile})
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		t.Fatalf("read descendant pid: %v", err)
@@ -231,6 +320,18 @@ func TestLiveSystemdScopeKillsSurvivingDescendant(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("descendant pid %d survived scope teardown", pid)
+}
+
+func helperArgument(name string) string {
+	switch name {
+	case "resource-helper":
+		return *resourceHelper
+	case "resource-unit":
+		return *resourceUnit
+	case "descendant-pid":
+		return *descendantPID
+	}
+	return ""
 }
 
 func liveScopeTest(t *testing.T) (Manager, string, string) {

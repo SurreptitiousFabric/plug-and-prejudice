@@ -6,7 +6,6 @@ import (
 	"debug/elf"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +29,29 @@ type Runner struct {
 	Bubblewrap              string
 	Timeout                 time.Duration
 	AllowDevelopmentScanner bool
+}
+
+type boundedBuffer struct {
+	buffer bytes.Buffer
+	limit  int
+	cancel context.CancelFunc
+	err    error
+}
+
+func (b *boundedBuffer) Write(data []byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
+	remaining := b.limit - b.buffer.Len()
+	if len(data) <= remaining {
+		return b.buffer.Write(data)
+	}
+	if remaining > 0 {
+		_, _ = b.buffer.Write(data[:remaining])
+	}
+	b.err = fmt.Errorf("output exceeded %d-byte limit", b.limit)
+	b.cancel()
+	return remaining, b.err
 }
 
 func DefaultRunner() (Runner, error) {
@@ -96,46 +118,11 @@ func (r Runner) Run(ctx context.Context, scannerPath string, target *os.File, di
 	cmd.WaitDelay = policy.ProcessWaitDelay
 	cmd.ExtraFiles = []*os.File{scanner, target}
 	cmd.Env = []string{}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("open scanner output: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("open scanner diagnostics: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start sandbox: %w", err)
-	}
-
-	type readResult struct {
-		data []byte
-		err  error
-	}
-	readBounded := func(reader io.Reader, limit int64) readResult {
-		var buf bytes.Buffer
-		_, copyErr := io.Copy(&buf, io.LimitReader(reader, limit+1))
-		if copyErr != nil {
-			return readResult{err: copyErr}
-		}
-		if int64(buf.Len()) > limit {
-			return readResult{err: fmt.Errorf("output exceeded %d-byte limit", limit)}
-		}
-		return readResult{data: buf.Bytes()}
-	}
-	outCh := make(chan readResult, 1)
-	errCh := make(chan readResult, 1)
-	go func() { outCh <- readBounded(stdout, MaxReportBytes) }()
-	go func() { errCh <- readBounded(stderr, MaxStderrBytes) }()
-	out := <-outCh
-	if out.err != nil {
-		cancel()
-	}
-	diagnostics := <-errCh
-	if diagnostics.err != nil {
-		cancel()
-	}
-	waitErr := cmd.Wait()
+	out := &boundedBuffer{limit: MaxReportBytes, cancel: cancel}
+	diagnostics := &boundedBuffer{limit: MaxStderrBytes, cancel: cancel}
+	cmd.Stdout = out
+	cmd.Stderr = diagnostics
+	waitErr := cmd.Run()
 	if out.err != nil {
 		return nil, fmt.Errorf("read scanner output: %w", out.err)
 	}
@@ -146,9 +133,9 @@ func (r Runner) Run(ctx context.Context, scannerPath string, target *os.File, di
 		return nil, fmt.Errorf("sandbox timed out after %s", r.Timeout)
 	}
 	if waitErr != nil {
-		return nil, fmt.Errorf("sandboxed scanner failed: %w: %s", waitErr, safeDiagnostic(diagnostics.data))
+		return nil, fmt.Errorf("sandboxed scanner failed: %w: %s", waitErr, safeDiagnostic(diagnostics.buffer.Bytes()))
 	}
-	return out.data, nil
+	return out.buffer.Bytes(), nil
 }
 
 func requireStaticELF(scanner *os.File) error {

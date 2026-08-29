@@ -37,16 +37,26 @@ descriptor is a root-owned, executable, non-group/world-writable ELF regular fil
 Execution uses `/proc/self/fd/N`, which Linux resolves to that open inode during
 `execve`; a pathname or mount replacement after validation cannot substitute a
 containment tool. This relies on Linux procfs being mounted and available to the
-trusted broker. Inherited `PATH` is never used to choose either executable.
+trusted broker. `systemd-run` and `systemctl` receive a fixed environment rather
+than the user session environment. The broker derives `/run/user/<euid>`, opens
+it without symlink traversal, and verifies that it is an euid-owned directory
+with no group/world permissions before supplying it as `XDG_RUNTIME_DIR`.
+Locale, pager, color, and URL rendering are fixed; loader, D-Bus override,
+configuration, Go-runtime, and other inherited variables are absent. Inherited
+`PATH` is never used to choose either executable.
 
 Bubblewrap retains the independent 30-second context deadline. The extra five
 seconds on the outer scope allow ordinary broker validation and teardown while
 still bounding failures outside the child timeout.
 
-Go subprocess waiting uses a two-second `WaitDelay` so descendants retaining
-stdout or stderr cannot hold the scoped broker indefinitely. When that broker
-exits, the outer process uses the trusted systemd interface to send SIGKILL to
-all remaining processes in the exact scope under a three-second deadline.
+Go subprocess waiting and both bounded pipe readers run concurrently. A
+two-second `WaitDelay` bounds pipe closure after cancellation even when a
+descendant retains one or both output descriptors. When the scoped broker
+exits, the outer process uses the trusted systemd interface to request SIGKILL
+for all remaining processes in the exact scope, then polls that scope's
+validated cgroup `populated` state until it observes zero (or collection) under
+a three-second deadline. Acceptance of the asynchronous kill request alone is
+not treated as completion evidence.
 The verified scope runtime remains the final independent bound if inner cleanup
 does not cooperate.
 
@@ -87,3 +97,7 @@ to Bubblewrap; failure is explicit and closed. The user-session broker retains
 the authority needed to ask the user manager for its own scope. Kernel,
 systemd, and cgroup implementation bugs remain out of scope. Resource ceilings
 reduce denial-of-service impact but cannot prove scanner correctness.
+The broker assumes it starts in the real host user and mount namespaces; an
+attacker who already controls those namespaces could substitute the apparent
+`/usr`, `/run`, procfs, or cgroupfs view and is outside this plugin-content
+review boundary.
