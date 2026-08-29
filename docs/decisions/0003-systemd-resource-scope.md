@@ -28,7 +28,10 @@ The scoped broker reads its unified cgroup-v2 path from `/proc/self/cgroup` and
 directly verifies `memory.max`, `memory.swap.max`, `pids.max`, and `cpu.max` are
 at least as strict as policy. Through the pinned `/usr/bin/systemctl` inode it
 also queries the exact randomized unit and rejects a missing, unlimited, or
-weaker `RuntimeMaxUSec`. It then lowers `RLIMIT_CORE` to zero and
+weaker `RuntimeMaxUSec`. Systemd 261 is the compatibility baseline: fixed-C
+`systemctl show ... RuntimeMaxUSec --value --no-pager` emits `35s\n` for this
+policy. Only bounded decimal `us`, `ms`, and `s` representations are accepted;
+unfamiliar output fails closed as an availability error. It then lowers `RLIMIT_CORE` to zero and
 `RLIMIT_NOFILE` to at most 256. Only after those checks does it resolve the
 installed plugin and open the target/scanner descriptors for Bubblewrap.
 The broker opens fixed `/usr/bin/systemd-run`, `/usr/bin/systemctl`, and `/usr/bin/bwrap` paths with
@@ -45,9 +48,8 @@ Locale, pager, color, and URL rendering are fixed; loader, D-Bus override,
 configuration, Go-runtime, and other inherited variables are absent. Inherited
 `PATH` is never used to choose either executable.
 
-Bubblewrap retains the independent 30-second context deadline. The extra five
-seconds on the outer scope allow ordinary broker validation and teardown while
-still bounding failures outside the child timeout.
+Bubblewrap retains the independent 30-second context deadline. Its two-second
+reaping allowance remains within the 35-second scope lifetime.
 
 Go subprocess waiting and both bounded pipe readers run concurrently. A
 two-second `WaitDelay` bounds pipe closure after cancellation even when a
@@ -57,8 +59,11 @@ for all remaining processes in the exact scope, then polls that scope's
 validated cgroup `populated` state until it observes zero (or collection) under
 a three-second deadline. Acceptance of the asynchronous kill request alone is
 not treated as completion evidence.
-The verified scope runtime remains the final independent bound if inner cleanup
-does not cooperate.
+One absolute 42-second broker-operation deadline composes the limits: 35 seconds
+for the scoped command, 2 seconds for command reaping, 3 seconds for teardown
+and cgroup-empty observation, and 2 seconds for final trusted-tool reaping.
+Caller cancellation does not cancel cleanup, but cleanup retains that original
+absolute deadline. Policy invariant tests reject inconsistent future values.
 
 The report records the exact enforced policy. The trusted broker rejects a
 scanner report whose resource metadata differs from its compiled policy.
@@ -97,7 +102,11 @@ to Bubblewrap; failure is explicit and closed. The user-session broker retains
 the authority needed to ask the user manager for its own scope. Kernel,
 systemd, and cgroup implementation bugs remain out of scope. Resource ceilings
 reduce denial-of-service impact but cannot prove scanner correctness.
-The broker assumes it starts in the real host user and mount namespaces; an
+The supported deployment is the independently root-installed CLI launched from
+the normal host session. The broker assumes it starts in the real host user and mount namespaces; an
 attacker who already controls those namespaces could substitute the apparent
 `/usr`, `/run`, procfs, or cgroupfs view and is outside this plugin-content
-review boundary.
+review boundary. The broker does not authenticate an arbitrary caller's
+namespace view. This assumption differs from hostile plugin files, which remain
+fully in scope as static input, and from an already-running same-user plugin,
+which already holds desktop-session authority.

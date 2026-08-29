@@ -9,10 +9,15 @@ listing plugin-controlled directory names or resolving a selected plugin. List
 mode reads directory entries in batches and rejects the entire operation after
 1,024 entries or on any unacceptable entry; it never reads plugin file content.
 
-The broker opens the plugin root and selected directory with Linux `openat2`,
-rejecting symlinks, magic links, filesystem crossings, and resolution outside
-the pinned root. It gives the exact selected-directory descriptor to
-Bubblewrap. Target-controlled text never enters a Bubblewrap option.
+The broker opens the trusted configured plugin-root path with Linux `openat2`,
+rejecting symlinks and magic links while allowing ordinary host mount crossings
+needed to reach that configured root. It opens the selected plugin beneath the
+already-pinned root with `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`,
+`RESOLVE_NO_MAGICLINKS`, and `RESOLVE_NO_XDEV`. That rejects a mount crossing
+during selected-target resolution; it does not prove that every nested path in
+the live target tree stays on one mount. Deeper nested-mount handling belongs
+to the later selected-tree/artifact boundary. Bubblewrap receives the exact
+selected-directory descriptor. Target-controlled text never enters an option.
 
 Before target resolution, the broker re-enters its pinned running inode in a
 randomized transient systemd user scope. It verifies its own cgroup-v2 files and
@@ -90,6 +95,20 @@ per ELF file, and 128 MiB total ELF input. Source and binary budgets are
 independent. Enforced limits are included in scan metadata and must match the
 broker's compiled policy.
 
+The end-to-end broker-operation policy deadline is 42 seconds: 35 seconds for
+the systemd-scoped command, up to 2 seconds for its process/pipe reaping, up to
+3 seconds for teardown actions and cgroup-empty observation, and up to 2
+seconds for a final trusted `systemctl` process/pipe reap. The scanner's
+30-second limit plus its 2-second reaping allowance stays inside the 35-second
+scope lifetime. Caller cancellation triggers detached cleanup but cannot extend
+the original absolute operation deadline.
+
+Systemd 261 is the documented compatibility baseline. With fixed C locale, the
+configured `RuntimeMaxSec=35s` is observed as `35s\n` from
+`systemctl show --property=RuntimeMaxUSec --value --no-pager`. The bounded
+parser accepts only non-negative decimal `us`, `ms`, or `s` forms emitted by the
+supported interface and rejects unfamiliar syntax as an availability failure.
+
 ## Tested guarantees
 
 The Linux integration test builds a trusted static probe and executes it through
@@ -103,14 +122,14 @@ writes work, and negatively tests:
 - visibility of host process information; and
 - leakage of non-policy environment variables.
 
-The scanner uses descriptor-rooted traversal. For each inspected regular file
-and descended directory it compares device/inode, type, mode, size, link count,
-mtime, and ctime before and after the observation. A detected rename,
-replacement, or modification aborts the scan; it is never returned as ordinary
-evidence. This detects concurrent mutation but is not an atomic filesystem
-snapshot. A change-and-revert wholly between two metadata observations is a
-documented residual race; immutable filesystem snapshots are not required from
-arbitrary installed-plugin storage.
+The scanner uses descriptor-rooted traversal and retains a bounded observation
+manifest. After all initial reads it performs a second descriptor-rooted pass
+over the complete observed tree, comparing directory membership, device/inode,
+type, mode, size, link count, mtime, ctime, and symlink targets. A mismatch
+aborts the complete scan and returns no ordinary evidence. This establishes a
+stable observed tree across two bounded passes, not an atomic filesystem
+snapshot. A change-and-revert wholly between observations remains a documented
+residual race.
 
 The test is run both normally and with Go's race detector. Additional tests
 verify the live systemd scope from inside its cgroup, reject missing, unlimited,
@@ -130,7 +149,8 @@ Root, kernel, package-manager, or systemd-manager compromise is outside the
 attacker model. Production scanner immutability relies on ordinary root-owned
 installation permissions; development-mode scanner execution makes no such
 production claim.
-The broker also assumes it is launched in the real host user and mount
-namespaces. Starting it inside an attacker-constructed namespace with forged
-views of `/usr`, `/run`, procfs, or cgroupfs is outside the plugin-content threat
-model.
+The supported higher-assurance path is the independently root-installed CLI
+launched from the normal host session. Starting it inside an attacker-created
+user or mount namespace with forged views of `/usr`, `/run`, procfs, or
+cgroupfs is outside the containment claim; the broker does not authenticate an
+arbitrary caller's namespaces. Hostile static plugin files remain in scope.

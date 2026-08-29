@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -99,21 +100,88 @@ func TestVerifyRejectsMissingWrongOrUnlimitedControls(t *testing.T) {
 }
 
 func TestPolicyValuesRemainIntentional(t *testing.T) {
-	if policy.MemoryMaxBytes != 256<<20 || policy.TasksMax != 64 || policy.CPUQuotaPercent != 100 || policy.WallTime.Seconds() != 30 {
+	if policy.MemoryMaxBytes != 256<<20 || policy.TasksMax != 64 || policy.CPUQuotaPercent != 100 || policy.WallTime.Seconds() != 30 || policy.OperationTimeout != 42*time.Second {
 		t.Fatal("resource policy changed without updating its contract tests")
+	}
+	if !policy.ValidTimingPolicy() {
+		t.Fatal("resource timing policy does not compose within the operation deadline")
+	}
+}
+
+func TestOperationDeadlinesReserveEveryReapingAndTeardownBudget(t *testing.T) {
+	start := time.Unix(100, 0)
+	deadlines := deadlinesFor(start)
+	if got := deadlines.operationEnd.Sub(start); got != 42*time.Second {
+		t.Fatalf("operation deadline = %s", got)
+	}
+	if got := deadlines.runEnd.Sub(start); got != policy.ScopeRuntime {
+		t.Fatalf("scoped command deadline = %s, want %s", got, policy.ScopeRuntime)
+	}
+	if remaining := deadlines.operationEnd.Sub(deadlines.runEnd); remaining != 2*policy.ProcessWaitDelay+policy.TeardownTimeout {
+		t.Fatalf("post-command reserve = %s", remaining)
 	}
 }
 
 func TestVerifyRuntimeMaxAcceptsExactAndRejectsMissingUnlimitedOrWeak(t *testing.T) {
-	for _, value := range []string{"35s", "35000000us", "34.5s"} {
+	for _, value := range []string{"35s", "35s\n", "35000000us", "34.5s", "35000ms"} {
 		if err := verifyRuntimeMax(value); err != nil {
 			t.Errorf("verifyRuntimeMax(%q) = %v", value, err)
 		}
 	}
-	for _, value := range []string{"", "infinity", "0", "35.000001s", "1min"} {
+	for _, value := range []string{"", "infinity", "0", "35.000001s", "1min", "-1s", "+35s", "35s\n35s\n", " 35s", "35 s", "999999999999999999999999999s"} {
 		if err := verifyRuntimeMax(value); err == nil {
 			t.Errorf("verifyRuntimeMax(%q) accepted unsafe value", value)
 		}
+	}
+}
+
+func TestRuntimeMaxFixtureMatchesSupportedSystemd261Output(t *testing.T) {
+	const observedSystemd261Output = "35s\n"
+	if err := verifyRuntimeMax(observedSystemd261Output); err != nil {
+		t.Fatalf("supported systemd 261 RuntimeMaxUSec output rejected: %v", err)
+	}
+}
+
+func TestTerminalStateWithoutControlGroup(t *testing.T) {
+	for _, state := range []string{"inactive", "failed"} {
+		if !terminalStateWithoutControlGroup("loaded", state) {
+			t.Errorf("loaded/%s without ControlGroup was not accepted as empty", state)
+		}
+	}
+	for _, test := range []struct{ load, active string }{
+		{load: "loaded", active: "active"}, {load: "loaded", active: "activating"},
+		{load: "not-found", active: "inactive"}, {load: "", active: "inactive"},
+	} {
+		if terminalStateWithoutControlGroup(test.load, test.active) {
+			t.Errorf("ambiguous terminal state %q/%q was accepted", test.load, test.active)
+		}
+	}
+}
+
+func TestTeardownResultRequiresObservedEmptyCgroup(t *testing.T) {
+	killFailure := errors.New("kill request failed")
+	populated := context.DeadlineExceeded
+	if err := teardownResult(killFailure, nil); err != nil {
+		t.Fatalf("independently empty cgroup rejected after kill failure: %v", err)
+	}
+	if err := teardownResult(nil, populated); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("accepted async kill with populated cgroup: %v", err)
+	}
+	if err := teardownResult(killFailure, populated); !errors.Is(err, killFailure) || !errors.Is(err, populated) {
+		t.Fatalf("combined teardown failure lost evidence: %v", err)
+	}
+}
+
+func TestCgroupDirectoryRejectsMalformedOrMismatchedControlGroup(t *testing.T) {
+	unit := "plug-prejudice-0123456789abcdef01234567.scope"
+	manager := Manager{CgroupRoot: t.TempDir()}
+	for _, value := range []string{"", "relative/path", "/wrong.scope", "/../" + unit, "/user.slice/not-the-unit.scope"} {
+		if _, err := manager.cgroupDirectory(unit, value); err == nil {
+			t.Errorf("cgroupDirectory accepted %q", value)
+		}
+	}
+	if _, err := manager.cgroupDirectory(unit, "/user.slice/"+unit); err != nil {
+		t.Fatalf("exact ControlGroup rejected: %v", err)
 	}
 }
 
@@ -198,6 +266,19 @@ func TestWaitCgroupEmptyFailsClosedAtDeadline(t *testing.T) {
 	defer cancel()
 	if err := waitCgroupEmpty(ctx, directory); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("waitCgroupEmpty() = %v, want deadline exceeded", err)
+	}
+}
+
+func TestWaitCgroupEmptyAcceptsCollectedOrAlreadyUnpopulatedCgroup(t *testing.T) {
+	if err := waitCgroupEmpty(context.Background(), filepath.Join(t.TempDir(), "collected")); err != nil {
+		t.Fatalf("collected cgroup rejected: %v", err)
+	}
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "cgroup.events"), []byte("populated 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitCgroupEmpty(context.Background(), directory); err != nil {
+		t.Fatalf("unpopulated cgroup rejected: %v", err)
 	}
 }
 
@@ -297,16 +378,41 @@ func TestLiveSystemdScopeKillsSurvivingDescendant(t *testing.T) {
 		if err := os.WriteFile(helperArgument("descendant-pid"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		time.Sleep(30 * time.Second)
 		return
 	}
 	manager, unit, executable := liveScopeTest(t)
+	manager.Stdout = &bytes.Buffer{}
+	manager.Stderr = &bytes.Buffer{}
 	pidFile := filepath.Join(t.TempDir(), "descendant.pid")
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	_ = manager.Run(ctx, unit, executable, []string{"-test.run=^TestLiveSystemdScopeKillsSurvivingDescendant$", "-resource-helper=descendant", "-descendant-pid=" + pidFile})
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("read descendant pid: %v", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- manager.Run(ctx, unit, executable, []string{"-test.run=^TestLiveSystemdScopeKillsSurvivingDescendant$", "-resource-helper=descendant", "-descendant-pid=" + pidFile})
+	}()
+	var data []byte
+	readinessDeadline := time.Now().Add(5 * time.Second)
+	for {
+		var err error
+		data, err = os.ReadFile(pidFile)
+		if err == nil {
+			break
+		}
+		if time.Now().After(readinessDeadline) {
+			cancel()
+			t.Fatalf("descendant did not report readiness: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	started := time.Now()
+	cancel()
+	select {
+	case <-result:
+	case <-time.After(policy.TeardownTimeout + policy.ProcessWaitDelay + 2*time.Second):
+		t.Fatal("cancelled broker did not finish bounded cleanup")
+	}
+	if elapsed := time.Since(started); elapsed > policy.TeardownTimeout+policy.ProcessWaitDelay+time.Second {
+		t.Fatalf("retained-pipe scope teardown exceeded bounded allowance: %s", elapsed)
 	}
 	pid, err := strconv.Atoi(string(data))
 	if err != nil {

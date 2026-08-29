@@ -39,6 +39,57 @@ func TestLiveBrokerListOverflowFailsInsideResourceScope(t *testing.T) {
 	}
 }
 
+func TestPluginStorageActionRunsOnlyAfterEveryContainmentCheck(t *testing.T) {
+	var events []string
+	checks := containmentChecks{
+		verify: func(string) error {
+			events = append(events, "cgroup")
+			return nil
+		},
+		verifyRuntime: func(context.Context, string) error {
+			events = append(events, "runtime")
+			return nil
+		},
+		applyLimits: func() error {
+			events = append(events, "rlimits")
+			return nil
+		},
+	}
+	result := afterVerifiedContainment("plug-prejudice-0123456789abcdef01234567.scope", checks, func() int {
+		events = append(events, "plugin-storage")
+		return 0
+	})
+	want := []string{"cgroup", "runtime", "rlimits", "plugin-storage"}
+	if result != 0 || !reflect.DeepEqual(events, want) {
+		t.Fatalf("contained action = %d, %q; want 0, %q", result, events, want)
+	}
+}
+
+func TestContainmentFailurePreventsPluginStorageAction(t *testing.T) {
+	for _, failed := range []string{"cgroup", "runtime", "rlimits"} {
+		t.Run(failed, func(t *testing.T) {
+			var actionCalled bool
+			failure := func(name string) error {
+				if name == failed {
+					return fmt.Errorf("%s unavailable", name)
+				}
+				return nil
+			}
+			checks := containmentChecks{
+				verify:        func(string) error { return failure("cgroup") },
+				verifyRuntime: func(context.Context, string) error { return failure("runtime") },
+				applyLimits:   func() error { return failure("rlimits") },
+			}
+			if result := afterVerifiedContainment("plug-prejudice-0123456789abcdef01234567.scope", checks, func() int {
+				actionCalled = true
+				return 0
+			}); result == 0 || actionCalled {
+				t.Fatalf("%s failure result=%d actionCalled=%v", failed, result, actionCalled)
+			}
+		})
+	}
+}
+
 func TestInstalledPluginIDsListsOnlyRealValidDirectories(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"org.example.alpha", "zeta"} {

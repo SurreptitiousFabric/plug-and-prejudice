@@ -68,19 +68,36 @@ func main() {
 	}
 	if *displayName == "descendant-child" {
 		signal.Ignore(syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-		_, _ = fmt.Fprintf(os.Stderr, "descendant=%d\n", os.Getpid())
+		ready := os.NewFile(3, "readiness")
+		if ready == nil {
+			panic("readiness descriptor unavailable")
+		}
+		_, _ = ready.Write([]byte{1})
+		_ = ready.Close()
 		for {
 			time.Sleep(time.Second)
 		}
 	}
 	if *displayName == "descendant" {
+		readinessReader, readinessWriter, err := os.Pipe()
+		if err != nil {
+			panic(err)
+		}
 		child := exec.Command("/app/plug-prejudice", "--target", "/target", "--display-name", "descendant-child", "--sandboxed", "--resource-limited")
 		child.Stdin = os.Stdin
 		child.Stdout = os.Stdout
 		child.Stderr = os.Stderr
+		child.ExtraFiles = []*os.File{readinessWriter}
 		if err := child.Start(); err != nil {
 			panic(err)
 		}
+		_ = readinessWriter.Close()
+		var ready [1]byte
+		if _, err := readinessReader.Read(ready[:]); err != nil {
+			panic(err)
+		}
+		_ = readinessReader.Close()
+		_, _ = fmt.Fprintf(os.Stderr, "descendant=%d\n", child.Process.Pid)
 		time.Sleep(10 * time.Second)
 		return
 	}
