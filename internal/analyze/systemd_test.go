@@ -14,8 +14,10 @@ func TestSystemdServiceRecordsExecAndInstallMetadata(t *testing.T) {
 	if len(result.Operations) != 2 || result.Operations[0].Command != "/usr/bin/curl" || result.Operations[0].Category != "process-execution-via-systemd-unit" || result.Operations[1].Category != "systemd-install-metadata" {
 		t.Fatalf("systemd operations = %#v", result.Operations)
 	}
-	if !hasFindingCategory(result, "systemd-install-metadata") {
-		t.Fatalf("systemd install metadata fact missing: %#v", result.Findings)
+	if !hasFindingCategory(result, "persistence") {
+		if !hasFindingCategory(result, "persistent-service-execution") {
+			t.Fatalf("systemd install/exec correlation missing: %#v", result.Findings)
+		}
 	}
 	foundDomain := false
 	for _, resource := range result.Resources {
@@ -37,33 +39,34 @@ func TestSystemdInstallMetadataAloneDoesNotClaimPersistentExecution(t *testing.T
 	}
 }
 
-func TestSystemdTimerRecordsActivationAndServiceSeparately(t *testing.T) {
+func TestSystemdTimerCorrelatesDefaultServiceExecution(t *testing.T) {
 	result := Sources(withValidManifest(map[string][]byte{
 		"units/refresh.timer":   []byte("[Timer]\nOnCalendar=hourly\n"),
 		"units/refresh.service": []byte("[Service]\nExecStart=/usr/bin/refresh\n"),
 	}))
-	if !hasFindingCategory(result, "service-activation-metadata") || hasFindingCategory(result, "triggered-service-execution") {
-		t.Fatalf("parser facts crossed the deferred correlation boundary: %#v", result.Findings)
+	if !hasFindingCategory(result, "service-activation-metadata") || !hasFindingCategory(result, "triggered-service-execution") {
+		t.Fatalf("timer/service evidence chain missing: %#v", result.Findings)
+	}
+	finding := findingByCategory(t, result, "triggered-service-execution")
+	if finding.Claim != report.ClaimInference || len(finding.Related) != 2 || len(finding.Evidence) != 2 {
+		t.Fatalf("timer/service inference provenance = %#v", finding)
 	}
 }
 
-func TestSystemdExplicitUnitReferenceRemainsASeparateFact(t *testing.T) {
+func TestSystemdExplicitUnitReferenceCorrelatesOnlySafeExactTarget(t *testing.T) {
 	result := Sources(withValidManifest(map[string][]byte{
 		"units/watch.path":     []byte("[Path]\nPathChanged=%h/input\nUnit=worker.service\n"),
 		"units/worker.service": []byte("[Service]\nExecStart=/usr/bin/worker\n"),
 		"units/watch.service":  []byte("[Service]\nExecStart=/usr/bin/wrong\n"),
 	}))
-	if len(result.Unknowns) != 1 || result.Unknowns[0].Reason != report.UnknownDynamicValue {
-		t.Fatalf("dynamic trigger unknown missing: %#v", result)
+	if !hasFindingCategory(result, "triggered-service-execution") || len(result.Unknowns) != 1 || result.Unknowns[0].Reason != report.UnknownDynamicValue {
+		t.Fatalf("explicit path-unit relationship or dynamic trigger missing: %#v", result)
 	}
-	foundReference := false
-	for _, operation := range result.Operations {
-		if operation.Category == "systemd-unit-reference" && operation.Command == "Path.Unit" && len(operation.Arguments) == 1 && operation.Arguments[0] == "worker.service" {
-			foundReference = true
+	finding := findingByCategory(t, result, "triggered-service-execution")
+	for _, evidence := range finding.Evidence {
+		if strings.Contains(evidence.Operation, "/usr/bin/wrong") {
+			t.Fatalf("default target was correlated despite explicit Unit=: %#v", finding)
 		}
-	}
-	if !foundReference || hasFindingCategory(result, "triggered-service-execution") {
-		t.Fatalf("unit reference was omitted or prematurely correlated: %#v", result)
 	}
 }
 

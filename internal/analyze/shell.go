@@ -66,6 +66,7 @@ func Sources(contents map[string][]byte) Result {
 	expandLiteralCommandWrappers(&result)
 	correlateIndirectInvocations(contents, &result)
 	deriveCapabilities(&result)
+	correlateInstalledStartupArtifacts(contents, &result)
 	annotateScopes(contents, nil, &result)
 	addLanguageCoverageLimitations(contents, &result)
 	return result

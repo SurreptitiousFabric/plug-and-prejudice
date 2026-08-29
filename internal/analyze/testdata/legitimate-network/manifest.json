@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "example.legitimate-network",
+  "name": "Legitimate network fixture",
+  "version": "1.0.0",
+  "kinds": ["panel"],
+  "entryPoints": {"panel": "Panel.qml"}
+}
