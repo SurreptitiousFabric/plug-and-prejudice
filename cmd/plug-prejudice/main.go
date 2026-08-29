@@ -8,15 +8,15 @@ import (
 	"time"
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/analyze"
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/buildinfo"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/inventory"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
 )
 
-const (
-	version       = analyze.DevelopmentAnalyzerVersion
-	policyVersion = "deterministic-v1"
-)
+const policyVersion = "deterministic-v1"
+
+var version = buildinfo.Version
 
 func main() {
 	os.Exit(run())

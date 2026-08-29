@@ -1,6 +1,6 @@
 # 0002: Python and JavaScript parser boundary
 
-- Status: proposed; dependency approval pending
+- Status: implemented with `gotreesitter` v0.51.0; independent dependency and parser-security approval pending
 - Date: 2026-08-27
 
 ## Context
@@ -39,21 +39,31 @@ Rejected. Python and JavaScript syntax, comments, strings, calls, and dynamic
 features are too complex for a small local implementation to support credible
 security findings.
 
-### Selective pure-Go Tree-sitter runtime
+### Selective pure-Go Tree-sitter runtime (selected)
 
-Candidate recommendation: audit and pilot `odvcencio/gotreesitter` using only
+Pin and audit `odvcencio/gotreesitter` v0.51.0 using only
 embedded Python and JavaScript grammar subsets. It preserves CGO-free static
 cross-compilation and exposes strict parsing with safety caps. However, it is a
 young, substantial ground-up runtime; its parser core, grammar provenance,
 binary-size cost, malformed-input behavior, and fuzz/race posture require an
 explicit dependency review before adoption.
 
-## Interim decision
+## Implemented boundary
 
-Do not add a Python or JavaScript semantic dependency silently. Inventory those
-files, derive reachability, and emit scoped coverage limitations that force the
-report status to `incomplete`. Continue language-independent analysis from
-already parsed shell/QML operations.
+The scanner embeds only Python and JavaScript grammar blobs via mandatory build
+tags, applies a two-second parser timeout plus the runtime's internal safety
+caps, and retains bounded call-expression facts with deterministic evidence.
+A separately bounded node traversal records textual assignment/use-site origins
+for dynamic arguments to a reviewed set of process APIs. It also resolves only
+direct literals and recursively referenced, single-definition module-level
+literal assignments under a 16-reference depth and 1,024-definition cap.
+Resolved values become separate process operations and can feed existing
+capability/correlation rules; assignment-based flows retain an informational
+fact citing definition and call. Branch-local, duplicate, cyclic, computed, or
+otherwise ambiguous values remain unknown. This does not claim branch-sensitive
+runtime control flow. Parser errors, safety stops, and
+production-budget exhaustion remain explicit limitations and dedicated
+unknowns. No Python or JavaScript runtime enters production containment.
 
 Before accepting the candidate dependency:
 
