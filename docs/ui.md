@@ -46,8 +46,10 @@ The scanner path is the broker's trusted sibling and must be a static ELF.
 The panel runs inside the long-lived `omarchy-shell` process alongside enabled
 plugins. A malicious plugin that is already enabled may interfere with the
 desktop session, panel, or displayed result. The standalone broker/CLI remains
-the higher-assurance recovery interface. Reviewing before enablement is outside
-the initial release scope.
+the higher-assurance recovery interface when independently installed and
+launched from the normal host session. That claim assumes the real host user
+and mount namespaces; the broker does not authenticate an arbitrary caller's
+namespaces. Reviewing before enablement is outside the initial release scope.
 
 ## Verification
 
