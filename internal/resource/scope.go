@@ -26,11 +26,12 @@ type Manager struct {
 }
 
 func DefaultManager() (Manager, error) {
-	systemdRun, err := trustedexec.Require(systemdRunPath)
+	systemdRun, err := trustedexec.Open(systemdRunPath)
 	if err != nil {
 		return Manager{}, fmt.Errorf("trusted systemd-run is required; refusing to scan without resource containment: %w", err)
 	}
-	return Manager{SystemdRun: systemdRun, CgroupRoot: "/sys/fs/cgroup", ProcCgroup: "/proc/self/cgroup"}, nil
+	defer systemdRun.Close()
+	return Manager{SystemdRun: systemdRunPath, CgroupRoot: "/sys/fs/cgroup", ProcCgroup: "/proc/self/cgroup"}, nil
 }
 
 func NewUnitName() (string, error) {
@@ -48,7 +49,16 @@ func (m Manager) Run(ctx context.Context, unit, executable string, arguments []s
 	if !validUnitName(unit) {
 		return errors.New("resource scope unit name is invalid")
 	}
-	cmd := exec.CommandContext(ctx, m.SystemdRun, Arguments(unit, executable, arguments)...)
+	systemdRun, err := trustedexec.Open(m.SystemdRun)
+	if err != nil {
+		return fmt.Errorf("pin systemd-run: %w", err)
+	}
+	defer systemdRun.Close()
+	procPath, args, err := systemdRun.CommandPath(Arguments(unit, executable, arguments)...)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, procPath, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

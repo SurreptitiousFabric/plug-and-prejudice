@@ -30,11 +30,12 @@ type Runner struct {
 }
 
 func DefaultRunner() (Runner, error) {
-	bwrap, err := trustedexec.Require(bubblewrapPath)
+	bwrap, err := trustedexec.Open(bubblewrapPath)
 	if err != nil {
 		return Runner{}, fmt.Errorf("trusted bubblewrap is required; refusing to scan without containment: %w", err)
 	}
-	return Runner{Bubblewrap: bwrap, Timeout: policy.WallTime}, nil
+	defer bwrap.Close()
+	return Runner{Bubblewrap: bubblewrapPath, Timeout: policy.WallTime}, nil
 }
 
 func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName string) ([]byte, error) {
@@ -63,7 +64,16 @@ func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName st
 
 	timed, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(timed, r.Bubblewrap, Arguments("/proc/self/fd/3", "/proc/self/fd/4", displayName)...)
+	bwrap, err := trustedexec.Open(r.Bubblewrap)
+	if err != nil {
+		return nil, fmt.Errorf("pin bubblewrap: %w", err)
+	}
+	defer bwrap.Close()
+	procPath, args, err := bwrap.CommandPath(Arguments("/proc/self/fd/3", "/proc/self/fd/4", displayName)...)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(timed, procPath, args...)
 	cmd.ExtraFiles = []*os.File{scanner, target}
 	cmd.Env = []string{}
 	stdout, err := cmd.StdoutPipe()

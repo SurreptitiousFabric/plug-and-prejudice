@@ -35,8 +35,11 @@ writable output directory.
 The broker requires Bubblewrap and fails closed if it is unavailable. The
 current arguments establish:
 
-- fixed root-owned, non-symlink executables at `/usr/bin/systemd-run` and
-  `/usr/bin/bwrap`; inherited `PATH` is never used to choose a boundary tool;
+- fixed root-owned, non-symlink, non-group/world-writable ELF executables at
+  `/usr/bin/systemd-run` and `/usr/bin/bwrap`; each is opened with Linux
+  `openat2` symlink/magic-link restrictions and executed through its pinned
+  `/proc/self/fd/N` inode, so pathname replacement after validation cannot
+  substitute a boundary tool; inherited `PATH` is never used;
 
 - new user, mount, PID, IPC, network, UTS, and cgroup namespaces through
   `--unshare-all`;
