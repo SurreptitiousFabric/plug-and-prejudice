@@ -1,0 +1,49 @@
+name: Product bug
+description: Report reproducible incorrect behavior that can be discussed publicly.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets, private plugin source, personal configuration, or live malware. Report exploitable vulnerabilities through the private Security link instead.
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: State exactly what happened, including any visible error or incorrect report claim.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Explain what you expected without claiming that a clean scan proves safety.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal safe reproduction
+      description: Use synthetic, non-secret input. Do not provide instructions that execute a hostile plugin.
+      placeholder: |
+        Architecture and Omarchy version:
+        Reviewer revision/version:
+        Minimal inert source bytes or steps:
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Relevant evidence and limitations
+      description: Include bounded report excerpts, file/line evidence, and known unknowns. Remove unrelated personal paths or data.
+    validations:
+      required: false
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Submission safety
+      options:
+        - label: I have removed credentials, private data, and unrelated personal configuration.
+          required: true
+        - label: This report can be discussed publicly and does not disclose an unpatched vulnerability.
+          required: true
