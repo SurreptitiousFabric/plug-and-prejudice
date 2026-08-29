@@ -126,13 +126,6 @@ func TestLocalProvenanceMustMatchTrustedScannerIdentity(t *testing.T) {
 	}
 }
 
-func TestComparisonCannotRelateDifferentNodeKinds(t *testing.T) {
-	r := graphReport(t)
-	if err := r.AddComparison(Comparison{Type: RelationshipCorroborates, FromKind: NodeFinding, FromID: r.Findings[0].ID, ToKind: NodeOperation, ToID: r.Operations[0].ID}); err == nil || !strings.Contains(err.Error(), "same node kind") {
-		t.Fatalf("cross-kind comparison result = %v", err)
-	}
-}
-
 func TestDedicatedUnknownRejectsNullStructuredCollections(t *testing.T) {
 	r := graphReport(t)
 	for _, mutate := range []func(*Unknown){

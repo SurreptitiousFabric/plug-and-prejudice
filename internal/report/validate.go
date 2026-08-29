@@ -665,9 +665,6 @@ func validateRelationships(r Report, kinds map[string]NodeKind, provenance map[s
 				return fmt.Errorf("relationship %q does not match the unknown's declared affected operation", relationship.ID)
 			}
 		case RelationshipCorroborates, RelationshipDisagreesWith:
-			if relationship.FromKind != relationship.ToKind {
-				return fmt.Errorf("relationship %q compares different node kinds", relationship.ID)
-			}
 			if relationship.From > relationship.To {
 				return fmt.Errorf("relationship %q comparison endpoints are not canonical", relationship.ID)
 			}
@@ -680,9 +677,6 @@ func validateRelationships(r Report, kinds map[string]NodeKind, provenance map[s
 			}
 			comparisonPairs[pair] = relationship.Type
 		case RelationshipDuplicates:
-			if relationship.FromKind != relationship.ToKind {
-				return fmt.Errorf("relationship %q marks different node kinds as duplicates", relationship.ID)
-			}
 			if relationship.From > relationship.To {
 				return fmt.Errorf("relationship %q duplicate endpoints are not canonical", relationship.ID)
 			}

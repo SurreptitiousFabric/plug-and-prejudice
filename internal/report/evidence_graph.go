@@ -136,9 +136,6 @@ func (r *Report) AddComparison(value Comparison) error {
 		return fmt.Errorf("comparison target %s %q is missing", value.ToKind, value.ToID)
 	}
 	fromKind, toKind := value.FromKind, value.ToKind
-	if fromKind != toKind {
-		return errors.New("comparison endpoints must have the same node kind")
-	}
 	if from > to {
 		from, to, fromKind, toKind = to, from, toKind, fromKind
 	}
