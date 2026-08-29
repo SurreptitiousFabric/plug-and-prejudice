@@ -21,6 +21,7 @@ func graphReport(t *testing.T) Report {
 	r := validReport()
 	r.Inventory = []File{{Path: "plugin.sh", Kind: "regular", Mode: "-rw-r--r--", Size: 0, Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "text/plain", Analysis: AnalysisAnalyzed}}
 	r.Target.FileCount = 1
+	refreshTestRootDigest(&r)
 	evidence := Evidence{Path: "plugin.sh", LineStart: 1, LineEnd: 1, Operation: "curl https://example.test"}
 	r.Operations = []Operation{{ID: "operation-1", Category: "process-execution", Command: "curl", Scope: ScopeRuntime, Confidence: ConfidenceHigh, Evidence: evidence, Provenance: testProvenance}}
 	r.Resources = []Resource{{ID: "resource-1", Kind: "network-domain", Access: "connect", Value: "example.test", Scope: ScopeRuntime, Confidence: ConfidenceHigh, Evidence: evidence, RelatedOperationID: "operation-1", Provenance: testProvenance}}
@@ -157,11 +158,7 @@ func TestValidateRejectsMissingForgedAndMistypedRelationships(t *testing.T) {
 
 func TestCorroborationAndDuplicationRequireCorrectEvidenceSources(t *testing.T) {
 	r := graphReport(t)
-	external := testProvenance
-	external.Analyzer = "omarchy/plugin-audit"
-	external.AnalyzerVersion = "pr8439-test"
-	external.EvidenceSource = EvidenceSourceOmarchyAudit
-	r.EvidenceInputs = append(r.EvidenceInputs, EvidenceInput{ID: "input-omarchy", Type: EvidenceInputOmarchyAudit, Label: "pinned Omarchy audit", Format: "omarchy-plugin-audit", Version: "pr8439-test"})
+	external := appendTestExternalInput(&r, "input-omarchy")
 	r.Findings = append(r.Findings, Finding{ID: "external-finding", Claim: ClaimFact, Severity: SeverityInformational, Confidence: ConfidenceHigh, Category: "network", Scope: ScopeRuntime, Title: "External network observation", Explanation: "Imported bounded evidence.", Evidence: []Evidence{{Path: "omarchy-audit.json"}}, Provenance: external})
 	if err := r.BuildEvidenceGraph(); err != nil {
 		t.Fatal(err)
@@ -199,11 +196,7 @@ func TestCorroborationAndDuplicationRequireCorrectEvidenceSources(t *testing.T) 
 
 func TestAddComparisonResolvesInternalIDsAndCanonicalizesEndpoints(t *testing.T) {
 	r := graphReport(t)
-	external := testProvenance
-	external.Analyzer = "omarchy/plugin-audit"
-	external.AnalyzerVersion = "pr8439-test"
-	external.EvidenceSource = EvidenceSourceOmarchyAudit
-	r.EvidenceInputs = append(r.EvidenceInputs, EvidenceInput{ID: "input-omarchy", Type: EvidenceInputOmarchyAudit, Label: "pinned Omarchy audit", Format: "omarchy-plugin-audit", Version: "pr8439-test"})
+	external := appendTestExternalInput(&r, "input-omarchy")
 	r.Operations = append(r.Operations, Operation{ID: "external-operation", Category: "omarchy-audit-command", Command: "curl", Scope: ScopeUnknown, Confidence: ConfidenceHigh, Evidence: Evidence{Path: "omarchy-audit.json"}, Provenance: external})
 	if err := r.BuildEvidenceGraph(); err != nil {
 		t.Fatal(err)
@@ -262,13 +255,11 @@ func TestDuplicatesRequireEquivalentPayloadWithinOneAnalyzerBoundary(t *testing.
 
 func TestDisagreementRequiresTypedCoverageDifferenceShape(t *testing.T) {
 	r := graphReport(t)
-	external := testProvenance
-	external.Analyzer = "omarchy/plugin-audit"
-	external.AnalyzerVersion = "pr8439-test"
-	external.EvidenceSource = EvidenceSourceOmarchyAudit
-	r.EvidenceInputs = append(r.EvidenceInputs, EvidenceInput{ID: "input-omarchy", Type: EvidenceInputOmarchyAudit, Label: "pinned audit", Format: "omarchy-plugin-audit", Version: "pr8439-test"})
+	external := appendTestExternalInput(&r, "input-omarchy")
 	r.Operations = append(r.Operations, Operation{ID: "external-command", Category: "omarchy-audit-command", Command: "wget", Scope: ScopeUnknown, Confidence: ConfidenceHigh, Evidence: Evidence{Path: "omarchy-audit.json"}, Provenance: external})
-	r.Findings = append(r.Findings, Finding{ID: "coverage-difference", Claim: ClaimFact, Severity: SeverityInformational, Confidence: ConfidenceHigh, Category: "omarchy-audit-coverage-disagreement", Scope: ScopeUnknown, Title: "Coverage differs", Explanation: "Only one producer retained this semantic subject.", Evidence: []Evidence{{Path: "plugin.sh"}}, Related: []string{}, Provenance: testProvenance})
+	coverageProvenance := external
+	coverageProvenance.RuleID = CoverageComparisonRule
+	r.Findings = append(r.Findings, Finding{ID: "coverage-difference", Claim: ClaimFact, Severity: SeverityInformational, Confidence: ConfidenceHigh, Category: CoverageDifferenceCategory, Scope: ScopeUnknown, Title: "Coverage differs", Explanation: "Only one producer retained this semantic subject.", Evidence: []Evidence{{InputID: "input-omarchy", Path: "omarchy-audit.json"}}, Related: []string{}, Provenance: coverageProvenance})
 	if err := r.BuildEvidenceGraph(); err != nil {
 		t.Fatal(err)
 	}

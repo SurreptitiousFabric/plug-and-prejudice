@@ -6,7 +6,7 @@ the first public release.
 The scanner's JSON report is a trust boundary, not an informal serialization.
 Producers emit exactly one schema version and consumers accept only versions
 they explicitly understand. Member names are exact and case-sensitive.
-Malformed Unicode, duplicate or unknown fields, unknown enum values,
+Malformed Unicode in decoded bytes or producer-side Go strings, duplicate or unknown fields, unknown enum values,
 excessive nesting, trailing JSON,
 and unsupported schema versions fail closed.
 

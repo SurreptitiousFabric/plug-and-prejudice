@@ -74,7 +74,7 @@ func run() int {
 			BinaryBytes: result.BinaryBytes,
 			Manifest:    analysis.Manifest,
 		},
-		EvidenceInputs: []report.EvidenceInput{{ID: report.TargetEvidenceInputID, Type: report.EvidenceInputTarget, Label: "scanned target", Digest: result.RootDigest, Format: "plug-prejudice-inventory", Version: report.SchemaVersion}},
+		EvidenceInputs: []report.EvidenceInput{{ID: report.TargetEvidenceInputID, Type: report.EvidenceInputTarget, Label: "scanned target", Digest: result.RootDigest, Format: report.TargetEvidenceInputFormat, Version: report.TargetEvidenceInputVersion}},
 		Inventory:      nonNil(files),
 		Operations:     nonNil(analysis.Operations),
 		Resources:      nonNil(analysis.Resources),

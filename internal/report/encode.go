@@ -52,6 +52,13 @@ func WriteCanonical(destination io.Writer, value Report) error {
 }
 
 func canonicalReport(value Report) (Report, error) {
+	if value.Target.Manifest != nil {
+		manifest := *value.Target.Manifest
+		manifest.Kinds = append([]string(nil), manifest.Kinds...)
+		sort.Strings(manifest.Kinds)
+		manifest.EntryPoints = cloneStringMap(manifest.EntryPoints)
+		value.Target.Manifest = &manifest
+	}
 	value.EvidenceInputs = append(make([]EvidenceInput, 0, len(value.EvidenceInputs)), value.EvidenceInputs...)
 	value.Inventory = append(make([]File, 0, len(value.Inventory)), value.Inventory...)
 	value.Operations = append(make([]Operation, 0, len(value.Operations)), value.Operations...)
@@ -74,6 +81,29 @@ func canonicalReport(value Report) (Report, error) {
 		return limitationTuple(value.Limitations[i]) < limitationTuple(value.Limitations[j])
 	})
 	sort.Slice(value.Errors, func(i, j int) bool { return errorTuple(value.Errors[i]) < errorTuple(value.Errors[j]) })
+	for index := range value.Inventory {
+		if value.Inventory[index].Binary != nil {
+			binary := *value.Inventory[index].Binary
+			binary.Libraries = sortedStrings(binary.Libraries)
+			binary.ImportedSymbols = sortedStrings(binary.ImportedSymbols)
+			binary.ExtractedStrings = sortedStrings(binary.ExtractedStrings)
+			binary.EmbeddedURLs = sortedStrings(binary.EmbeddedURLs)
+			binary.FileCapabilities = sortedStrings(binary.FileCapabilities)
+			value.Inventory[index].Binary = &binary
+		}
+		if value.Inventory[index].Archive != nil {
+			archive := *value.Inventory[index].Archive
+			// Archive entry order is retained because it records package order and
+			// may contain repeated path names with distinct positions.
+			archive.Entries = append([]ArchiveEntry(nil), archive.Entries...)
+			value.Inventory[index].Archive = &archive
+		}
+	}
+	for index := range value.Operations {
+		// Argument position is executable-call semantics and is deliberately
+		// preserved rather than sorted.
+		value.Operations[index].Arguments = append([]string(nil), value.Operations[index].Arguments...)
+	}
 	for index := range value.Findings {
 		value.Findings[index].Evidence = append(make([]Evidence, 0, len(value.Findings[index].Evidence)), value.Findings[index].Evidence...)
 		value.Findings[index].Related = append(make([]string, 0, len(value.Findings[index].Related)), value.Findings[index].Related...)
@@ -86,11 +116,15 @@ func canonicalReport(value Report) (Report, error) {
 		value.Unknowns[index].AffectedOperations = append(make([]string, 0, len(value.Unknowns[index].AffectedOperations)), value.Unknowns[index].AffectedOperations...)
 		value.Unknowns[index].SuppressedRules = append(make([]string, 0, len(value.Unknowns[index].SuppressedRules)), value.Unknowns[index].SuppressedRules...)
 		sortEvidence(value.Unknowns[index].Evidence)
-		sort.Slice(value.Unknowns[index].Origins, func(i, j int) bool {
-			return string(value.Unknowns[index].Origins[i].Kind)+"\x00"+value.Unknowns[index].Origins[i].Name+"\x00"+evidenceTuple(value.Unknowns[index].Origins[i].Evidence) < string(value.Unknowns[index].Origins[j].Kind)+"\x00"+value.Unknowns[index].Origins[j].Name+"\x00"+evidenceTuple(value.Unknowns[index].Origins[j].Evidence)
-		})
+		// Origin order is a bounded data-flow trace and therefore semantic.
 		sort.Strings(value.Unknowns[index].AffectedOperations)
 		sort.Strings(value.Unknowns[index].SuppressedRules)
+	}
+	for index := range value.Relationships {
+		if value.Relationships[index].Comparison != nil {
+			basis := *value.Relationships[index].Comparison
+			value.Relationships[index].Comparison = &basis
+		}
 	}
 	coverage := coverageFromInventory(value.Inventory)
 	if err := value.BuildReviewSummary(coverage); err != nil {
@@ -100,6 +134,23 @@ func canonicalReport(value Report) (Report, error) {
 		return Report{}, err
 	}
 	return value, nil
+}
+
+func sortedStrings(values []string) []string {
+	result := append([]string(nil), values...)
+	sort.Strings(result)
+	return result
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
 }
 
 func sortEvidence(values []Evidence) {

@@ -281,6 +281,22 @@ func mustWrite(t *testing.T, name, content string) {
 	}
 }
 
+func TestProducerUsesSharedInventoryRootDigest(t *testing.T) {
+	target := t.TempDir()
+	mustWrite(t, filepath.Join(target, "plugin.sh"), "echo inspected\n")
+	result, err := Scan(target, DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := report.InventoryRootDigest(result.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RootDigest != want {
+		t.Fatalf("producer root digest = %q, validator algorithm = %q", result.RootDigest, want)
+	}
+}
+
 func byPath(result Result) map[string]report.File {
 	files := make(map[string]report.File)
 	for _, file := range result.Files {

@@ -172,6 +172,10 @@ func (r *Report) bindEvidenceInputs() {
 // base evidence graph has assigned public references. Validate independently
 // enforces source independence and rejects contradictory pairs.
 func (r *Report) AddComparison(value Comparison) error {
+	return r.addComparisonWithDigest(value, sha256.Sum256)
+}
+
+func (r *Report) addComparisonWithDigest(value Comparison, digest digestFunction) error {
 	if value.Type != RelationshipCorroborates && value.Type != RelationshipDisagreesWith && value.Type != RelationshipDuplicates {
 		return errors.New("comparison relationship type is invalid")
 	}
@@ -227,7 +231,7 @@ func (r *Report) AddComparison(value Comparison) error {
 		}
 		basis = ComparisonBasis{Kind: string(value.FromKind), Subject: fromSubject}
 	case RelationshipDisagreesWith:
-		if basis.Kind != "coverage" || basis.Subject == "" || !fromOK || fromSubject != basis.Subject || value.ToKind != NodeFinding || !r.isCoverageDifferenceFinding(value.ToID) {
+		if basis.Kind != "coverage" || basis.Subject == "" || !fromOK || fromSubject != basis.Subject || value.ToKind != NodeFinding || !r.isCoverageDifferenceFinding(value.FromKind, value.FromID, value.ToID) {
 			return errors.New("disagreement requires an observation and a typed coverage-difference basis")
 		}
 	}
@@ -236,10 +240,13 @@ func (r *Report) AddComparison(value Comparison) error {
 		from, to, fromKind, toKind = to, from, toKind, fromKind
 	}
 	relationship := Relationship{Type: value.Type, FromKind: fromKind, From: from, ToKind: toKind, To: to, Comparison: &basis}
-	relationship.ID = relationshipID(relationship.Type, relationship.FromKind, relationship.From, relationship.ToKind, relationship.To)
+	relationship.ID = relationshipIDWithDigest(relationship.Type, relationship.FromKind, relationship.From, relationship.ToKind, relationship.To, digest)
 	for _, existing := range r.Relationships {
 		if existing.ID == relationship.ID {
-			return nil
+			if sameRelationship(existing, relationship) {
+				return nil
+			}
+			return fmt.Errorf("comparison relationship ID collision")
 		}
 	}
 	if len(r.Relationships) >= MaxProducedEvidenceRelations {
@@ -296,13 +303,38 @@ func (r Report) semanticSubject(kind NodeKind, id string) (string, bool) {
 	return "", false
 }
 
-func (r Report) isCoverageDifferenceFinding(id string) bool {
-	for _, item := range r.Findings {
-		if item.ID == id {
-			return item.Category == "omarchy-audit-coverage-disagreement"
+func (r Report) isCoverageDifferenceFinding(sourceKind NodeKind, sourceID, findingID string) bool {
+	sourceReference, findingReference := "", ""
+	switch sourceKind {
+	case NodeOperation:
+		for _, item := range r.Operations {
+			if item.ID == sourceID {
+				sourceReference = item.Reference
+			}
+		}
+	case NodeResource:
+		for _, item := range r.Resources {
+			if item.ID == sourceID {
+				sourceReference = item.Reference
+			}
 		}
 	}
-	return false
+	for _, item := range r.Findings {
+		if item.ID == findingID {
+			findingReference = item.Reference
+		}
+	}
+	return sourceReference != "" && findingReference != "" && coverageDifferenceShape(r, sourceKind, sourceReference, findingReference)
+}
+
+func sameRelationship(first, second Relationship) bool {
+	if first.Type != second.Type || first.FromKind != second.FromKind || first.From != second.From || first.ToKind != second.ToKind || first.To != second.To {
+		return false
+	}
+	if first.Comparison == nil || second.Comparison == nil {
+		return first.Comparison == nil && second.Comparison == nil
+	}
+	return *first.Comparison == *second.Comparison
 }
 
 func publicReference(kind NodeKind, internalID string) string {

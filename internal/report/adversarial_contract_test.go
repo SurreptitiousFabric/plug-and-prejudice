@@ -138,6 +138,7 @@ func TestCoverageIsRecomputedFromInventoryDispositions(t *testing.T) {
 	r.Target.FileCount = 1
 	r.Target.ReadBytes = 1
 	r.Inventory = []File{{Path: "plugin.sh", Kind: "regular", Mode: "-rw-r--r--", Size: 1, Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "text/plain", Analysis: AnalysisPartial, AnalysisReason: "dynamic behavior unresolved"}}
+	refreshTestRootDigest(&r)
 	r.Limitations = []Limitation{{Code: "dynamic", Description: "Dynamic behavior remains unresolved."}}
 	forged := NewCoverageSummary(1, 0, 0)
 	if err := r.BuildReviewSummary(forged); err == nil || !strings.Contains(err.Error(), "inventory dispositions") {
@@ -157,6 +158,7 @@ func TestCompleteStatusRejectsIncompleteCoverage(t *testing.T) {
 	r.Target.FileCount = 1
 	r.Target.ReadBytes = 1
 	r.Inventory = []File{{Path: "plugin.sh", Kind: "regular", Mode: "-rw-r--r--", Size: 1, Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "text/plain", Analysis: AnalysisPartial, AnalysisReason: "unsupported syntax"}}
+	refreshTestRootDigest(&r)
 	r.Review = nil
 	if err := r.BuildReviewSummary(NewCoverageSummary(0, 1, 0)); err != nil {
 		t.Fatal(err)
@@ -186,6 +188,7 @@ func TestCoverageExclusionsAreVisibleAndCannotLaunderCompleteStatus(t *testing.T
 		r.Inventory[index] = File{Path: fmt.Sprintf("asset-%04d.dat", index), Kind: "regular", Mode: "-rw-r--r--", Analysis: AnalysisNotApplicable, AnalysisReason: "opaque inert data asset"}
 	}
 	r.Target.FileCount = len(r.Inventory)
+	refreshTestRootDigest(&r)
 	if err := r.BuildReviewSummary(coverageFromInventory(r.Inventory)); err != nil {
 		t.Fatal(err)
 	}
@@ -223,6 +226,7 @@ func TestEvidenceMustBeAnchoredToDeclaredInput(t *testing.T) {
 	// Remove the helper-added path to exercise the accepting boundary directly.
 	r.Inventory = r.Inventory[:1]
 	r.Target.FileCount = 1
+	refreshTestRootDigest(&r)
 	_ = r.BuildReviewSummary(coverageFromInventory(r.Inventory))
 	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "absent from target inventory") {
 		t.Fatalf("unanchored local path result = %v", err)
@@ -313,12 +317,13 @@ func TestCanonicalEncodingIsIndependentOfNonsemanticInsertionOrder(t *testing.T)
 	base := graphReport(t)
 	base.Inventory = append(base.Inventory, File{Path: "z.sh", Kind: "regular", Mode: "-rw-r--r--", Inspected: true, SHA256: strings.Repeat("b", 64), ContentType: "text/plain", Analysis: AnalysisAnalyzed})
 	base.Target.FileCount = len(base.Inventory)
+	refreshTestRootDigest(&base)
 	base.Operations = append(base.Operations, Operation{ID: "operation-z", Category: "process-execution", Command: "wget", Scope: ScopeRuntime, Confidence: ConfidenceHigh, Evidence: Evidence{InputID: TargetEvidenceInputID, Path: "z.sh"}, Provenance: testProvenance})
 	base.Resources = append(base.Resources, Resource{ID: "resource-z", Kind: "network-domain", Access: "connect", Value: "z.test", Scope: ScopeRuntime, Confidence: ConfidenceHigh, Evidence: Evidence{InputID: TargetEvidenceInputID, Path: "z.sh"}, RelatedOperationID: "operation-z", Provenance: testProvenance})
 	base.Unknowns = append(base.Unknowns, Unknown{ID: "unknown-z", Category: "dynamic", Reason: UnknownDynamicValue, Scope: ScopeRuntime, Confidence: ConfidenceHigh, Title: "Z unresolved", Description: "Z remains dynamic.", Evidence: []Evidence{{InputID: TargetEvidenceInputID, Path: "z.sh"}}, Origins: []ValueOrigin{}, AffectedOperations: []string{"operation-z"}, SuppressedRules: []string{}, Provenance: testProvenance})
 	base.Limitations = []Limitation{{Code: "z-limit", Description: "Z limitation.", Scope: ScopeUnknown}, {Code: "a-limit", Description: "A limitation.", Scope: ScopeRuntime}}
 	base.Errors = []ScanError{{Code: "z-error", Message: "Z error."}, {Code: "a-error", Message: "A error."}}
-	base.EvidenceInputs = append(base.EvidenceInputs, EvidenceInput{ID: "input-unused-z", Type: EvidenceInputOmarchyAudit, Label: "Z", Format: "test", Version: "1"})
+	appendTestExternalInput(&base, "input-unused-z")
 	for index := 0; index < 10; index++ {
 		base.Findings = append(base.Findings, Finding{ID: fmt.Sprintf("finding-extra-%02d", index), Claim: ClaimFact, Severity: SeverityMedium, Confidence: ConfidenceHigh, Category: "test", Scope: ScopeRuntime, Title: fmt.Sprintf("Reason %02d", index), Explanation: "Deterministic reason ordering.", Evidence: []Evidence{{InputID: TargetEvidenceInputID, Path: "plugin.sh"}}, Related: []string{}, Provenance: testProvenance})
 	}
@@ -383,6 +388,7 @@ func TestBoundedCanonicalEncodingRejectsAggregateOverageWithoutPartialOutput(t *
 	r := validReport()
 	r.Inventory = []File{{Path: "plugin.sh", Kind: "regular", Mode: "-rw-r--r--", Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "text/plain", Analysis: AnalysisAnalyzed}}
 	r.Target.FileCount = 1
+	refreshTestRootDigest(&r)
 	r.Operations = make([]Operation, 5_000)
 	for index := range r.Operations {
 		r.Operations[index] = Operation{ID: fmt.Sprintf("operation-%05d", index), Category: "bounded-output", Command: fmt.Sprintf("%05d-%s", index, strings.Repeat("x", 3_500)), Scope: ScopeRuntime, Confidence: ConfidenceHigh, Evidence: Evidence{Path: "plugin.sh"}, Provenance: testProvenance}

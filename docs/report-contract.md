@@ -4,8 +4,10 @@ Status: versioned development contract; not yet release-stable.
 
 The scanner emits one canonical, HTML-escaped UTF-8 JSON object no larger than
 16 MiB. It validates and bounded-encodes that exact representation in memory
-before writing any destination bytes. The trusted broker accepts no malformed
-UTF-8, invalid UTF-16 surrogate escapes, duplicate members, case aliases,
+before writing any destination bytes. The in-memory producer validator rejects
+invalid UTF-8 in every serialized string and map key before `encoding/json`
+can replace bytes. The trusted broker accepts no malformed UTF-8, invalid
+UTF-16 surrogate escapes, duplicate members, case aliases,
 unknown exact member names, excessive nesting, trailing values, unsupported schema versions, invalid enum values,
 unsafe evidence paths, broken operation references, or contradictory
 `complete` status. The standalone scanner validates the complete object before
@@ -23,9 +25,13 @@ or finding claim. Structured provenance requires a rule ID, analyzer, analyzer
 version, and evidence source. Every evidence location names a bounded declared
 input. Local source and inventory-metadata evidence must name an actually
 retained target inventory path; external Omarchy evidence must name its
-separate declared pinned audit input and cannot impersonate the target. Local evidence must name the trusted deterministic
-analyzer and exact scanner version; Omarchy evidence names its distinct
-analyzer. Provenance identifies an asserted producer, not truth. Inventory paths are unique canonical POSIX
+separate declared pinned audit input and cannot impersonate the target. The
+target input has fixed ID `input-target`, type `target-inventory`, format
+`plug-prejudice-inventory`, and version `2.0.0`; exactly one is permitted.
+Omarchy inputs use the pinned `omarchy-plugin-audit` / `pr8439-732b104`
+contract. Local evidence must name the trusted deterministic analyzer and exact
+scanner version; Omarchy evidence must name `omarchy/plugin-audit` and the
+input's exact version. Provenance identifies an asserted producer, not truth. Inventory paths are unique canonical POSIX
 target-relative labels. `target.fileCount` equals
 the inventory length. Every finding has at least one valid evidence location;
 every resource has valid evidence and names an existing originating operation.
@@ -56,11 +62,17 @@ panel. The scanner's own analysis-production budget remains a separate required
 defense so a hostile target cannot waste work before serialization; the
 recommended design is recorded in [ADR 0005](decisions/0005-analysis-production-budget.md).
 
-Canonical encoding sorts inventory by path; evidence nodes by full internal
-identity; relationships by complete typed tuple; limitations and errors by
-documented field tuples; and bounded review reasons by priority then stable
-reference/title. JSON map keys use the standard canonical lexical ordering.
-Producer insertion order does not affect emitted bytes. Scan
+Canonical encoding operates on a copy. It sorts the non-semantic collections:
+evidence inputs by ID; inventory by path; operation, resource, finding, and
+unknown nodes by full internal identity; relationships by complete typed tuple;
+limitations and errors by documented tuples; manifest kinds and ELF library,
+symbol, extracted-string, URL, and capability sets lexically; finding/unknown
+evidence by evidence tuple; finding related IDs, unknown affected-operation
+IDs, and suppressed-rule IDs lexically; and review reasons by deterministic
+priority and stable reference/title. JSON map keys use the standard lexical
+ordering of Go's JSON encoder. Operation arguments retain call position,
+unknown origins retain data-flow trace order, and archive entries retain
+package order; changing those semantic sequences changes canonical bytes. Scan
 start/completion timestamps are observations and therefore intentionally vary.
 Deterministic ordering supports report comparison and audit but does not turn a
 scan into a reproducible or atomic filesystem snapshot.
@@ -100,19 +112,35 @@ Optional Omarchy audit nodes retain `omarchy-audit` provenance. `corroborates`
 is restricted to operation/operation or resource/resource observations with
 the same validated semantic subject, one local producer and one distinct
 external producer. `duplicates` requires the same kind, semantic payload, and
-source/analyzer boundary. `disagrees-with` is restricted to an observation and
-an informational Omarchy coverage-difference finding with a visible typed
-comparison basis. Exact matches
+source/analyzer boundary. `disagrees-with` is restricted to an operation or
+resource observation and a fact, informational, high-confidence, unknown-scope
+Omarchy coverage-difference finding. Its single evidence record and
+analyzer/version/source provenance must equal the retained source observation
+(apart from the exact comparison rule ID), and its `coverage` basis subject
+must equal the reconstructed source subject. Exact matches
 may be connected with `corroborates`; retained-set differences use
 `disagrees-with` plus an informational coverage finding. Neither edge asserts
-correctness or safety. The pinned PR #8439 format lacks a target digest, so an
-imported report also requires a snapshot-binding unknown even after manifest ID
-matching.
+correctness or safety: a disagreement means only that one source retained the
+observation while the compared source retained no matching observation. Every
+undigested external input requires exactly shaped, source-bound
+`external-input-unbound` uncertainty even after manifest-ID matching. A
+syntactically valid SHA-256 on an external input represents a digest already
+calculated over the pinned input by the trusted importer; the report validator
+binds evidence to that declaration but cannot recreate an external digest from
+bytes that are intentionally not embedded in the report.
 
-`target.rootDigest`, when present, is exactly 64 lowercase hexadecimal
-characters representing SHA-256 over deterministically ordered inventory
-metadata, retained content hashes, link targets, and skip reasons. It binds the
-bytes actually retained for inspection and makes omissions visible; it does not
+`target.rootDigest` is mandatory, including for an empty inventory. The
+producer and accepting validator share one algorithm, and the validator
+independently recomputes the value rather than trusting either serialized
+digest field. SHA-256 receives a domain string and record count followed by
+records in path order. Each record encodes path, kind, mode, unsigned size,
+retained SHA-256, link target, and skip reason; every variable field is an
+unsigned 64-bit big-endian byte length followed by its UTF-8 bytes. NUL in a
+filesystem observation field is rejected. Analysis dispositions, extracted
+metadata, findings, and summaries do not affect this target-observation digest.
+The exact digest is repeated by the sole target evidence input. It binds the
+bytes actually retained for inspection and makes serialized inventory changes
+visible; it does not
 hash skipped file content, establish an atomic filesystem snapshot, or prove
 that the target has not changed since the scan.
 
@@ -121,8 +149,11 @@ Each inventory record carries one authoritative analysis disposition:
 counted exactly once: `retainedUnits = totalUnits + excludedUnits`, while
 `totalUnits = analyzedUnits + partialUnits + unanalyzedUnits`. Every exclusion,
 partial unit, and unanalyzed unit requires a reason. ELF and bounded archive
-metadata cannot claim complete semantic behavior analysis; native ELF behavior
-also requires an explicit unknown. Coverage is recomputed from these records;
+metadata cannot claim complete semantic behavior analysis. Every retained ELF
+requires its own `native-behavior` unknown citing `input-target` and that exact
+ELF path, with local deterministic source/inventory provenance and runtime or
+unknown scope; external evidence and repository-tooling uncertainty cannot
+satisfy it. Coverage is recomputed from these records;
 inventory retention alone is not semantic analysis. The validator can enforce
 artifact classes visible in serialized metadata, but cannot rediscover every
 language without retained bytes.
@@ -163,7 +194,8 @@ never establishes that a plugin is safe.
 
 Dedicated unknown records use a reason (`dynamic-value`,
 `unsupported-syntax`, `parser-failure`, `budget-exhaustion`,
-`unreachable-source`, `native-behavior`, or `unresolved-data-flow`) rather than
+`unreachable-source`, `native-behavior`, `unresolved-data-flow`, or the
+dedicated `external-input-unbound`) rather than
 a severity. Their origins are explicitly evidence locations, not proof of
 runtime control flow. See [ADR 0010](decisions/0010-explicit-unknown-behavior.md).
 See the [severity model](severity-model.md) for level meanings, contextual

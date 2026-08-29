@@ -17,6 +17,7 @@ func TestReviewSummarySeparatesImpactConfidenceCoverageUnknownsAndCounts(t *test
 	r.Inventory[9].Inspected, r.Inventory[9].SHA256, r.Inventory[9].ContentType = false, "", ""
 	r.Inventory[9].Analysis, r.Inventory[9].AnalysisReason = AnalysisUnanalyzed, "unsupported artifact"
 	r.Target.FileCount = 10
+	refreshTestRootDigest(&r)
 	coverage := NewCoverageSummary(8, 1, 1)
 	if err := r.BuildReviewSummary(coverage); err != nil {
 		t.Fatal(err)

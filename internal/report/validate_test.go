@@ -11,6 +11,14 @@ import (
 
 var testProvenance = Provenance{RuleID: "test/v1", Analyzer: "plug-prejudice/deterministic", AnalyzerVersion: "test", EvidenceSource: EvidenceSourceTargetSource}
 
+func appendTestExternalInput(r *Report, id string) Provenance {
+	provenance := Provenance{RuleID: OmarchyAuditObservationRule, Analyzer: OmarchyAuditAnalyzer, AnalyzerVersion: OmarchyAuditInputVersion, EvidenceSource: EvidenceSourceOmarchyAudit}
+	r.EvidenceInputs = append(r.EvidenceInputs, EvidenceInput{ID: id, Type: EvidenceInputOmarchyAudit, Label: "pinned test Omarchy audit", Format: OmarchyAuditInputFormat, Version: OmarchyAuditInputVersion})
+	r.Status = StatusIncomplete
+	r.Unknowns = append(r.Unknowns, Unknown{ID: "unknown-binding-" + id, Category: ExternalEvidenceBindingCategory, Reason: UnknownExternalBinding, Scope: ScopeUnknown, Confidence: ConfidenceHigh, Title: "External input is not digest bound", Description: "Test input has no independently checked digest.", Evidence: []Evidence{{InputID: id, Path: "omarchy-audit.json"}}, Origins: []ValueOrigin{}, AffectedOperations: []string{}, SuppressedRules: []string{ExternalSnapshotBindingRule}, Provenance: provenance})
+	return provenance
+}
+
 func buildTestEvidence(t *testing.T, r *Report) {
 	t.Helper()
 	for index := range r.Operations {
@@ -58,6 +66,7 @@ func buildTestEvidence(t *testing.T, r *Report) {
 		}
 	}
 	r.Target.FileCount = len(r.Inventory)
+	refreshTestRootDigest(r)
 	if err := r.BuildEvidenceGraph(); err != nil {
 		t.Fatal(err)
 	}
@@ -91,13 +100,27 @@ func validReport() Report {
 		Scan: ScanMetadata{ScannerVersion: "test", PolicyVersion: "test", StartedAt: now, CompletedAt: now, Sandboxed: true,
 			ResourceLimits: &ResourceLimits{MemoryMaxBytes: 256 << 20, TasksMax: 64, CPUQuotaPercent: 100, WallTimeSeconds: 30}},
 		Target:         Target{DisplayName: "example"},
-		EvidenceInputs: []EvidenceInput{{ID: TargetEvidenceInputID, Type: EvidenceInputTarget, Label: "test target", Format: "plug-prejudice-inventory", Version: SchemaVersion}},
+		EvidenceInputs: []EvidenceInput{{ID: TargetEvidenceInputID, Type: EvidenceInputTarget, Label: "test target", Format: TargetEvidenceInputFormat, Version: TargetEvidenceInputVersion}},
 		Inventory:      []File{}, Operations: []Operation{}, Resources: []Resource{}, Findings: []Finding{}, Unknowns: []Unknown{}, Relationships: []Relationship{}, Limitations: []Limitation{}, Errors: []ScanError{},
 	}
+	refreshTestRootDigest(&r)
 	if err := r.BuildReviewSummary(NewCoverageSummary(0, 0, 0)); err != nil {
 		panic(err)
 	}
 	return r
+}
+
+func refreshTestRootDigest(r *Report) {
+	digest, err := InventoryRootDigest(r.Inventory)
+	if err != nil {
+		panic(err)
+	}
+	r.Target.RootDigest = digest
+	for index := range r.EvidenceInputs {
+		if r.EvidenceInputs[index].ID == TargetEvidenceInputID {
+			r.EvidenceInputs[index].Digest = digest
+		}
+	}
 }
 
 func finalizeNativeArtifactReport(r *Report) {
@@ -114,6 +137,7 @@ func finalizeNativeArtifactReport(r *Report) {
 	if err := r.BuildEvidenceGraph(); err != nil {
 		panic(err)
 	}
+	refreshTestRootDigest(r)
 	if err := r.BuildReviewSummary(coverageFromInventory(r.Inventory)); err != nil {
 		panic(err)
 	}
@@ -123,6 +147,7 @@ func finalizeArchiveArtifactReport(r *Report) {
 	r.Status = StatusIncomplete
 	r.Inventory[0].Analysis, r.Inventory[0].AnalysisReason = AnalysisPartial, "bounded archive inventory is not semantic payload analysis"
 	r.Limitations = []Limitation{{Code: "archive-semantic-analysis-unavailable", Description: "Archive contents were inventoried but not semantically analyzed.", Path: r.Inventory[0].Path, Scope: ScopeUnknown}}
+	refreshTestRootDigest(r)
 	if err := r.BuildReviewSummary(coverageFromInventory(r.Inventory)); err != nil {
 		panic(err)
 	}
@@ -165,6 +190,7 @@ func TestValidateRejectsBrokenRelationshipsAndUnsafeEvidence(t *testing.T) {
 	r.Findings[0].Evidence[0].Path = "plugin.sh"
 	r.Inventory = []File{{Path: "plugin.sh", Kind: "regular", Mode: "-rw-r--r--", Inspected: true, SHA256: strings.Repeat("a", 64), ContentType: "text/plain", Analysis: AnalysisAnalyzed}}
 	r.Target.FileCount = 1
+	refreshTestRootDigest(&r)
 	_ = r.BuildReviewSummary(coverageFromInventory(r.Inventory))
 	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "missing operation") {
 		t.Fatalf("Validate() error = %v", err)
@@ -227,6 +253,7 @@ func TestValidateRejectsInvalidInventoryLimitationsAndErrors(t *testing.T) {
 	}
 	r.Inventory = r.Inventory[:1]
 	r.Target.FileCount = 1
+	refreshTestRootDigest(&r)
 	r.Limitations = []Limitation{{Code: "unknown", Description: "Unknown", Path: "/host/path"}}
 	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "unsafe target-relative path") {
 		t.Fatalf("unsafe limitation path error = %v", err)
@@ -238,7 +265,7 @@ func TestValidateRejectsInvalidInventoryLimitationsAndErrors(t *testing.T) {
 	}
 }
 
-func TestValidateRequiresCanonicalRootDigestWhenPresent(t *testing.T) {
+func TestValidateRequiresCanonicalAndRecomputedRootDigest(t *testing.T) {
 	for _, digest := range []string{"short", strings.Repeat("g", 64), strings.Repeat("A", 64), strings.Repeat("0", 62)} {
 		r := validReport()
 		r.Target.RootDigest = digest
@@ -249,8 +276,8 @@ func TestValidateRequiresCanonicalRootDigestWhenPresent(t *testing.T) {
 	r := validReport()
 	r.Target.RootDigest = strings.Repeat("a", 64)
 	r.EvidenceInputs[0].Digest = r.Target.RootDigest
-	if err := r.Validate(); err != nil {
-		t.Fatalf("canonical root digest was rejected: %v", err)
+	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("forged canonical root digest result = %v", err)
 	}
 }
 

@@ -38,9 +38,17 @@ kind, recomputes edge IDs, requires every base edge, rejects extra forged base
 edges, and validates a typed semantic comparison basis. Corroboration requires
 compatible local/external observations from distinct analyzers; duplication
 requires equivalent observations within one source/analyzer boundary;
-disagreement is limited to a typed observation-to-coverage-difference shape.
+disagreement is limited to a typed operation/resource-to-coverage-difference
+shape whose fact/severity/scope, evidence, provenance, and reconstructed
+semantic subject match the compared observation. It describes retained-set
+coverage, not causal or behavioral disagreement.
 Required edges are keyed by their complete typed tuples, never their display
 hashes.
+
+`AddComparison` uses the same injected SHA-256 derivation boundary as graph
+construction. Repeating the exact complete endpoint/type/basis tuple is
+idempotent. If a display relationship ID already names any different type,
+endpoint kind/reference, or comparison basis, construction fails closed.
 
 The deterministic producer retains at most 20,000 resource/finding edges and
 applies the limitation/incomplete semantics from ADR 0005 before appending a
@@ -66,8 +74,9 @@ clickable path, URL, command, QML expression, HTML fragment, or Markdown.
 
 A 128-bit truncated reference has a very small but nonzero collision
 possibility. Node and relationship construction track the complete identity or
-typed tuple behind each display ID, and any collision is a fail-closed
-validation failure, never aliasing. Full internal IDs remain the machine join.
+typed tuple and comparison basis behind each display ID, and any collision is a
+fail-closed construction or validation failure, never aliasing. Full internal
+IDs remain the machine join.
 References establish stable report identity, not source authenticity or signed
 release provenance.
 

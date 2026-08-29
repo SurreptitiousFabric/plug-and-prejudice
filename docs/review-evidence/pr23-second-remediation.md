@@ -34,6 +34,14 @@ summary data, validates the result, and streams the exact HTML-escaped encoding
 into a bounded 16 MiB buffer. It writes the caller's destination only after the
 complete encoding succeeds.
 
+The later third focused remediation records additional binding and
+producer-path corrections in
+[`pr23-third-remediation.md`](pr23-third-remediation.md). In particular, the
+accepting validator now recomputes the target inventory digest; canonical-order
+claims are limited to explicitly classified collections; and undigested
+external inputs, target ELF uncertainty, coverage comparisons, and comparison
+collisions are source-aware at the accepting boundary.
+
 The residual live-filesystem and containment assumptions belong to PR #22.
 This contract validates internal consistency and declared provenance; it does
 not prove that any observation is true, that coverage is correct, or that a

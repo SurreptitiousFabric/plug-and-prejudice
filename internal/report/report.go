@@ -4,6 +4,21 @@ import "time"
 
 const SchemaVersion = "2.0.0"
 
+const (
+	TargetEvidenceInputID      = "input-target"
+	TargetEvidenceInputFormat  = "plug-prejudice-inventory"
+	TargetEvidenceInputVersion = SchemaVersion
+
+	OmarchyAuditInputFormat         = "omarchy-plugin-audit"
+	OmarchyAuditInputVersion        = "pr8439-732b104"
+	OmarchyAuditAnalyzer            = "omarchy/plugin-audit"
+	ExternalEvidenceBindingCategory = "external-evidence-binding"
+	ExternalSnapshotBindingRule     = "external-snapshot-equivalence/v1"
+	OmarchyAuditObservationRule     = "omarchy-audit-observation/v1"
+	CoverageDifferenceCategory      = "omarchy-audit-coverage-disagreement"
+	CoverageComparisonRule          = "omarchy-audit-coverage-comparison/v1"
+)
+
 // Collection limits bound the validated object graph handed to presentation
 // consumers. The inventory limit matches the scanner's default file ceiling;
 // derived collections allow multiple observations per file without accepting
@@ -298,6 +313,7 @@ const (
 	UnknownUnreachableSource UnknownReason = "unreachable-source"
 	UnknownNativeBehavior    UnknownReason = "native-behavior"
 	UnknownUnresolvedFlow    UnknownReason = "unresolved-data-flow"
+	UnknownExternalBinding   UnknownReason = "external-input-unbound"
 )
 
 type OriginKind string
@@ -391,7 +407,6 @@ type EvidenceInputType string
 const (
 	EvidenceInputTarget       EvidenceInputType = "target-inventory"
 	EvidenceInputOmarchyAudit EvidenceInputType = "omarchy-audit"
-	TargetEvidenceInputID                       = "input-target"
 )
 
 type EvidenceInput struct {

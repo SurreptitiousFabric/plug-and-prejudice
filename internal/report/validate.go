@@ -11,6 +11,7 @@ import (
 	"path"
 	"reflect"
 	"strings"
+	"unicode/utf8"
 )
 
 // Decode validates the scanner's trust-boundary output before another
@@ -57,6 +58,11 @@ func (r Report) Validate() error {
 			return fmt.Errorf("top-level report collections must be JSON arrays, not null: %s", collection.name)
 		}
 	}
+	// Validate every serialized string before semantic processing or producer
+	// encoding can normalize hostile invalid UTF-8.
+	if err := validateHostileStrings(r); err != nil {
+		return err
+	}
 	if !oneOf(string(r.Status), string(StatusComplete), string(StatusIncomplete), string(StatusError)) {
 		return fmt.Errorf("invalid report status %q", r.Status)
 	}
@@ -77,11 +83,9 @@ func (r Report) Validate() error {
 	if r.Target.DisplayName == "" || r.Target.FileCount < 0 || r.Target.ReadBytes < 0 || r.Target.BinaryBytes < 0 {
 		return errors.New("invalid target metadata")
 	}
-	if r.Target.RootDigest != "" {
-		decoded, err := hex.DecodeString(r.Target.RootDigest)
-		if err != nil || len(decoded) != 32 || strings.ToLower(r.Target.RootDigest) != r.Target.RootDigest {
-			return errors.New("target root digest must be 64 lowercase hexadecimal SHA-256 characters")
-		}
+	decodedRoot, err := hex.DecodeString(r.Target.RootDigest)
+	if err != nil || len(decodedRoot) != 32 || strings.ToLower(r.Target.RootDigest) != r.Target.RootDigest {
+		return errors.New("target root digest must be 64 lowercase hexadecimal SHA-256 characters")
 	}
 	if r.Target.FileCount != len(r.Inventory) {
 		return fmt.Errorf("target file count %d does not match inventory length %d", r.Target.FileCount, len(r.Inventory))
@@ -208,6 +212,13 @@ func (r Report) Validate() error {
 	if readBytes != r.Target.ReadBytes || binaryBytes != r.Target.BinaryBytes {
 		return fmt.Errorf("target byte totals do not match inspected inventory: source %d/%d, binary %d/%d", r.Target.ReadBytes, readBytes, r.Target.BinaryBytes, binaryBytes)
 	}
+	recomputedRoot, err := InventoryRootDigest(r.Inventory)
+	if err != nil {
+		return fmt.Errorf("target inventory root digest: %w", err)
+	}
+	if r.Target.RootDigest != recomputedRoot || inputs[TargetEvidenceInputID].Digest != recomputedRoot {
+		return errors.New("target root digest does not match the retained inventory")
+	}
 
 	operations := make(map[string]struct{}, len(r.Operations))
 	referenceKinds := make(map[string]NodeKind, len(r.Operations)+len(r.Resources)+len(r.Findings)+len(r.Unknowns))
@@ -313,6 +324,7 @@ func (r Report) Validate() error {
 	}
 	unknowns := make(map[string]struct{}, len(r.Unknowns))
 	nativeUnknownPaths := make(map[string]bool)
+	externalBindingUnknowns := make(map[string]bool)
 	for _, unknown := range r.Unknowns {
 		if unknown.ID == "" || unknown.Reference != publicReference(NodeUnknown, unknown.ID) || unknown.Category == "" || unknown.Title == "" || unknown.Description == "" {
 			return errors.New("unknown identity, category, title, description, and public reference are required")
@@ -327,7 +339,7 @@ func (r Report) Validate() error {
 		if err := validateProvenance(unknown.Provenance, r.Scan.ScannerVersion); err != nil {
 			return fmt.Errorf("unknown %q: %w", unknown.ID, err)
 		}
-		if !oneOf(string(unknown.Reason), string(UnknownDynamicValue), string(UnknownUnsupportedSyntax), string(UnknownParserFailure), string(UnknownBudgetExhaustion), string(UnknownUnreachableSource), string(UnknownNativeBehavior), string(UnknownUnresolvedFlow)) {
+		if !oneOf(string(unknown.Reason), string(UnknownDynamicValue), string(UnknownUnsupportedSyntax), string(UnknownParserFailure), string(UnknownBudgetExhaustion), string(UnknownUnreachableSource), string(UnknownNativeBehavior), string(UnknownUnresolvedFlow), string(UnknownExternalBinding)) {
 			return fmt.Errorf("unknown %q has invalid reason %q", unknown.ID, unknown.Reason)
 		}
 		if err := validateScopeConfidence(unknown.Scope, unknown.Confidence); err != nil {
@@ -346,9 +358,24 @@ func (r Report) Validate() error {
 			}
 		}
 		if unknown.Reason == UnknownNativeBehavior {
-			for _, evidence := range unknown.Evidence {
-				nativeUnknownPaths[evidence.Path] = true
+			if unknown.Scope == ScopeTooling {
+				return fmt.Errorf("unknown %q uses repository-tooling scope for target native behavior", unknown.ID)
 			}
+			for _, evidence := range unknown.Evidence {
+				if evidence.InputID == TargetEvidenceInputID && (unknown.Provenance.EvidenceSource == EvidenceSourceTargetSource || unknown.Provenance.EvidenceSource == EvidenceSourceInventoryMetadata) {
+					nativeUnknownPaths[evidence.Path] = true
+				}
+			}
+		}
+		bindingInput, binding, bindingErr := validateExternalBindingUnknown(unknown, inputs)
+		if bindingErr != nil {
+			return fmt.Errorf("unknown %q: %w", unknown.ID, bindingErr)
+		}
+		if binding {
+			if externalBindingUnknowns[bindingInput] {
+				return fmt.Errorf("external evidence input %q has duplicate binding unknowns", bindingInput)
+			}
+			externalBindingUnknowns[bindingInput] = true
 		}
 		for _, origin := range unknown.Origins {
 			if !oneOf(string(origin.Kind), string(OriginAssignment), string(OriginParameterExpansion), string(OriginPropertyAssignment), string(OriginUseSite)) {
@@ -372,6 +399,11 @@ func (r Report) Validate() error {
 	for _, file := range r.Inventory {
 		if (file.Binary != nil || file.ContentType == "application/x-elf") && !nativeUnknownPaths[file.Path] {
 			return fmt.Errorf("inventory ELF %q lacks an explicit native-behavior unknown", file.Path)
+		}
+	}
+	for _, input := range r.EvidenceInputs {
+		if input.Type == EvidenceInputOmarchyAudit && input.Digest == "" && !externalBindingUnknowns[input.ID] {
+			return fmt.Errorf("undigested external evidence input %q lacks an explicit binding unknown", input.ID)
 		}
 	}
 	if err := validateRelationships(r, referenceKinds, referenceProvenance); err != nil {
@@ -403,9 +435,6 @@ func (r Report) Validate() error {
 	if err := validateReviewSummary(r); err != nil {
 		return err
 	}
-	if err := validateHostileStrings(r); err != nil {
-		return err
-	}
 	switch r.Status {
 	case StatusComplete:
 		if len(r.Unknowns) != 0 || len(r.Limitations) != 0 || len(r.Errors) != 0 {
@@ -431,6 +460,9 @@ func (r Report) Validate() error {
 
 func validateHostileStrings(r Report) error {
 	check := func(label, value string) error {
+		if !utf8.ValidString(value) {
+			return fmt.Errorf("%s contains invalid UTF-8", label)
+		}
 		encoded, err := json.Marshal(value)
 		if err != nil {
 			return fmt.Errorf("%s cannot be JSON encoded: %w", label, err)
@@ -617,7 +649,7 @@ func validateProvenance(value Provenance, scannerVersion string) error {
 			return errors.New("local evidence provenance does not match the trusted scanner identity")
 		}
 	case EvidenceSourceOmarchyAudit:
-		if value.Analyzer != "omarchy/plugin-audit" {
+		if value.Analyzer != OmarchyAuditAnalyzer {
 			return errors.New("Omarchy evidence provenance has an invalid analyzer identity")
 		}
 	}
@@ -767,7 +799,7 @@ func validateComparisonRelationship(r Report, relationship Relationship, provena
 			return errors.New("duplicates must share one evidence-source and analyzer boundary")
 		}
 	case RelationshipDisagreesWith:
-		if relationship.ToKind != NodeFinding || relationship.Comparison.Kind != "coverage" || !fromOK || relationship.Comparison.Subject != fromSubject || !coverageFindingByReference(r, relationship.To) {
+		if (relationship.FromKind != NodeOperation && relationship.FromKind != NodeResource) || relationship.ToKind != NodeFinding || relationship.Comparison.Kind != "coverage" || !fromOK || relationship.Comparison.Subject != fromSubject || !coverageDifferenceShape(r, relationship.FromKind, relationship.From, relationship.To) {
 			return errors.New("disagreement is not an observation-to-coverage-difference comparison")
 		}
 	default:
@@ -819,11 +851,73 @@ func semanticSubjectByReference(r Report, kind NodeKind, reference string) (stri
 	return "", false
 }
 
-func coverageFindingByReference(r Report, reference string) bool {
-	for _, item := range r.Findings {
-		if item.Reference == reference {
-			return item.Category == "omarchy-audit-coverage-disagreement"
+func coverageDifferenceShape(r Report, sourceKind NodeKind, sourceReference, findingReference string) bool {
+	var sourceEvidence Evidence
+	var sourceProvenance Provenance
+	foundSource := false
+	switch sourceKind {
+	case NodeOperation:
+		for _, item := range r.Operations {
+			if item.Reference == sourceReference {
+				sourceEvidence, sourceProvenance, foundSource = item.Evidence, item.Provenance, true
+			}
 		}
+	case NodeResource:
+		for _, item := range r.Resources {
+			if item.Reference == sourceReference {
+				sourceEvidence, sourceProvenance, foundSource = item.Evidence, item.Provenance, true
+			}
+		}
+	}
+	if !foundSource {
+		return false
+	}
+	hasExternalContext := sourceProvenance.EvidenceSource == EvidenceSourceOmarchyAudit
+	if !hasExternalContext {
+		for _, input := range r.EvidenceInputs {
+			if input.Type == EvidenceInputOmarchyAudit {
+				hasExternalContext = true
+				break
+			}
+		}
+	}
+	if !hasExternalContext {
+		return false
+	}
+	sourceSubject, subjectOK := semanticSubjectByReference(r, sourceKind, sourceReference)
+	if !subjectOK {
+		return false
+	}
+	sourceExternal := sourceProvenance.EvidenceSource == EvidenceSourceOmarchyAudit
+	hasOppositeMatch := func(reference string, provenance Provenance) bool {
+		if reference == sourceReference || (provenance.EvidenceSource == EvidenceSourceOmarchyAudit) == sourceExternal {
+			return false
+		}
+		subject, ok := semanticSubjectByReference(r, sourceKind, reference)
+		return ok && subject == sourceSubject
+	}
+	switch sourceKind {
+	case NodeOperation:
+		for _, item := range r.Operations {
+			if hasOppositeMatch(item.Reference, item.Provenance) {
+				return false
+			}
+		}
+	case NodeResource:
+		for _, item := range r.Resources {
+			if hasOppositeMatch(item.Reference, item.Provenance) {
+				return false
+			}
+		}
+	}
+	for _, item := range r.Findings {
+		if item.Reference != findingReference {
+			continue
+		}
+		return item.Claim == ClaimFact && item.Severity == SeverityInformational && item.Confidence == ConfidenceHigh && item.Scope == ScopeUnknown &&
+			item.Category == CoverageDifferenceCategory && len(item.Evidence) == 1 && item.Evidence[0] == sourceEvidence && len(item.Related) == 0 &&
+			item.Provenance.RuleID == CoverageComparisonRule && item.Provenance.Analyzer == sourceProvenance.Analyzer &&
+			item.Provenance.AnalyzerVersion == sourceProvenance.AnalyzerVersion && item.Provenance.EvidenceSource == sourceProvenance.EvidenceSource
 	}
 	return false
 }
@@ -858,6 +952,7 @@ func validateEvidenceInputs(r Report) (map[string]EvidenceInput, error) {
 		return nil, errors.New("report requires a bounded evidence-input declaration")
 	}
 	values := make(map[string]EvidenceInput, len(r.EvidenceInputs))
+	targetCount := 0
 	for _, input := range r.EvidenceInputs {
 		if input.ID == "" || input.Label == "" || input.Format == "" || input.Version == "" {
 			return nil, errors.New("evidence input identity, label, format, and version are required")
@@ -868,6 +963,17 @@ func validateEvidenceInputs(r Report) (map[string]EvidenceInput, error) {
 		if !oneOf(string(input.Type), string(EvidenceInputTarget), string(EvidenceInputOmarchyAudit)) {
 			return nil, fmt.Errorf("evidence input %q has invalid type %q", input.ID, input.Type)
 		}
+		switch input.Type {
+		case EvidenceInputTarget:
+			targetCount++
+			if input.ID != TargetEvidenceInputID || input.Format != TargetEvidenceInputFormat || input.Version != TargetEvidenceInputVersion || input.Digest == "" {
+				return nil, errors.New("target evidence input has an invalid identity, format, version, or digest")
+			}
+		case EvidenceInputOmarchyAudit:
+			if input.ID == TargetEvidenceInputID || input.Format != OmarchyAuditInputFormat || input.Version != OmarchyAuditInputVersion {
+				return nil, fmt.Errorf("external evidence input %q has unsupported identity, format, or version", input.ID)
+			}
+		}
 		if input.Digest != "" {
 			decoded, err := hex.DecodeString(input.Digest)
 			if err != nil || len(decoded) != 32 || strings.ToLower(input.Digest) != input.Digest {
@@ -877,7 +983,7 @@ func validateEvidenceInputs(r Report) (map[string]EvidenceInput, error) {
 		values[input.ID] = input
 	}
 	target, exists := values[TargetEvidenceInputID]
-	if !exists || target.Type != EvidenceInputTarget || target.Digest != r.Target.RootDigest {
+	if targetCount != 1 || !exists || target.Type != EvidenceInputTarget || target.Digest != r.Target.RootDigest {
 		return nil, errors.New("target evidence input must identify and bind the retained target inventory")
 	}
 	return values, nil
@@ -903,8 +1009,32 @@ func validateAnchoredEvidence(evidence Evidence, provenance Provenance, files ma
 		if input.Type != EvidenceInputOmarchyAudit {
 			return errors.New("external evidence does not refer to a declared Omarchy audit input")
 		}
+		if provenance.Analyzer != OmarchyAuditAnalyzer || provenance.AnalyzerVersion != input.Version {
+			return errors.New("external evidence provenance does not match its declared input")
+		}
 	}
 	return nil
+}
+
+func validateExternalBindingUnknown(value Unknown, inputs map[string]EvidenceInput) (string, bool, error) {
+	declaresBinding := value.Category == ExternalEvidenceBindingCategory || value.Reason == UnknownExternalBinding
+	if !declaresBinding {
+		return "", false, nil
+	}
+	if value.Category != ExternalEvidenceBindingCategory || value.Reason != UnknownExternalBinding || value.Scope != ScopeUnknown || value.Confidence != ConfidenceHigh {
+		return "", false, errors.New("external binding unknown has an invalid category, reason, scope, or confidence")
+	}
+	if len(value.Evidence) != 1 || len(value.Origins) != 0 || len(value.AffectedOperations) != 0 || len(value.SuppressedRules) != 1 || value.SuppressedRules[0] != ExternalSnapshotBindingRule {
+		return "", false, errors.New("external binding unknown has an invalid structural shape")
+	}
+	input, exists := inputs[value.Evidence[0].InputID]
+	if !exists || input.Type != EvidenceInputOmarchyAudit || input.Digest != "" {
+		return "", false, errors.New("external binding unknown does not identify one undigested external input")
+	}
+	if value.Provenance.RuleID != OmarchyAuditObservationRule || value.Provenance.EvidenceSource != EvidenceSourceOmarchyAudit || value.Provenance.Analyzer != OmarchyAuditAnalyzer || value.Provenance.AnalyzerVersion != input.Version {
+		return "", false, errors.New("external binding unknown provenance does not match its declared input")
+	}
+	return input.ID, true, nil
 }
 
 func isObviouslyAnalyzablePath(value string) bool {
@@ -916,7 +1046,7 @@ func isObviouslyAnalyzablePath(value string) bool {
 }
 
 func validateRelativePath(value string) error {
-	if strings.Contains(value, "\\") {
+	if strings.Contains(value, "\\") || strings.ContainsRune(value, '\x00') {
 		return fmt.Errorf("noncanonical target-relative path %q", value)
 	}
 	clean := path.Clean(value)
