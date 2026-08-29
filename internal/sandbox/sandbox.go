@@ -130,7 +130,7 @@ func (r Runner) Run(ctx context.Context, scannerPath string, target *os.File, di
 		return nil, fmt.Errorf("read scanner diagnostics: %w", diagnostics.err)
 	}
 	if errors.Is(timed.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("sandbox timed out after %s", r.Timeout)
+		return nil, fmt.Errorf("sandbox timed out after %s: %s", r.Timeout, safeDiagnostic(diagnostics.buffer.Bytes()))
 	}
 	if waitErr != nil {
 		return nil, fmt.Errorf("sandboxed scanner failed: %w: %s", waitErr, safeDiagnostic(diagnostics.buffer.Bytes()))

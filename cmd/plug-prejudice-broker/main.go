@@ -32,6 +32,12 @@ type pluginList struct {
 	Plugins       []string `json:"plugins"`
 }
 
+type containmentChecks struct {
+	verify        func(string) error
+	verifyRuntime func(context.Context, string) error
+	applyLimits   func() error
+}
+
 func main() {
 	os.Exit(run())
 }
@@ -79,60 +85,67 @@ func run() int {
 		}
 		return 0
 	}
-	if err := manager.Verify(*resourceScope); err != nil {
-		fmt.Fprintf(os.Stderr, "verify resource scope: %v\n", err)
-		return 1
-	}
-	if err := manager.VerifyRuntime(context.Background(), *resourceScope); err != nil {
-		fmt.Fprintf(os.Stderr, "verify resource scope lifetime: %v\n", err)
-		return 1
-	}
-	if err := resource.ApplyProcessLimits(); err != nil {
-		fmt.Fprintf(os.Stderr, "apply process limits: %v\n", err)
-		return 1
-	}
-	if *list {
-		plugins, err := installedPluginIDs(*pluginsRoot)
+	checks := containmentChecks{verify: manager.Verify, verifyRuntime: manager.VerifyRuntime, applyLimits: resource.ApplyProcessLimits}
+	return afterVerifiedContainment(*resourceScope, checks, func() int {
+		if *list {
+			plugins, err := installedPluginIDs(*pluginsRoot)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "list plugins: %v\n", err)
+				return 1
+			}
+			if err := json.NewEncoder(os.Stdout).Encode(pluginList{SchemaVersion: "1.0.0", Plugins: plugins}); err != nil {
+				fmt.Fprintf(os.Stderr, "write plugin list: %v\n", err)
+				return 1
+			}
+			return 0
+		}
+		target, err := openInstalledTarget(*pluginsRoot, *pluginID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "list plugins: %v\n", err)
+			fmt.Fprintf(os.Stderr, "resolve plugin: %v\n", err)
 			return 1
 		}
-		if err := json.NewEncoder(os.Stdout).Encode(pluginList{SchemaVersion: "1.0.0", Plugins: plugins}); err != nil {
-			fmt.Fprintf(os.Stderr, "write plugin list: %v\n", err)
+		defer target.Close()
+		runner, err := sandbox.DefaultRunner()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		output, err := runner.Run(context.Background(), *scanner, target, *pluginID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "review plugin: %v\n", err)
+			return 1
+		}
+		decoded, err := report.Decode(output)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "validate scanner report: %v\n", err)
+			return 1
+		}
+		if !expectedResourceLimits(decoded.Scan.ResourceLimits) {
+			fmt.Fprintln(os.Stderr, "validate scanner report: resource policy metadata does not match broker policy")
+			return 1
+		}
+		if _, err := os.Stdout.Write(output); err != nil {
+			fmt.Fprintf(os.Stderr, "write report: %v\n", err)
 			return 1
 		}
 		return 0
-	}
-	target, err := openInstalledTarget(*pluginsRoot, *pluginID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolve plugin: %v\n", err)
+	})
+}
+
+func afterVerifiedContainment(scope string, checks containmentChecks, action func() int) int {
+	if err := checks.verify(scope); err != nil {
+		fmt.Fprintf(os.Stderr, "verify resource scope: %v\n", err)
 		return 1
 	}
-	defer target.Close()
-	runner, err := sandbox.DefaultRunner()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	if err := checks.verifyRuntime(context.Background(), scope); err != nil {
+		fmt.Fprintf(os.Stderr, "verify resource scope lifetime: %v\n", err)
 		return 1
 	}
-	output, err := runner.Run(context.Background(), *scanner, target, *pluginID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "review plugin: %v\n", err)
+	if err := checks.applyLimits(); err != nil {
+		fmt.Fprintf(os.Stderr, "apply process limits: %v\n", err)
 		return 1
 	}
-	decoded, err := report.Decode(output)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "validate scanner report: %v\n", err)
-		return 1
-	}
-	if !expectedResourceLimits(decoded.Scan.ResourceLimits) {
-		fmt.Fprintln(os.Stderr, "validate scanner report: resource policy metadata does not match broker policy")
-		return 1
-	}
-	if _, err := os.Stdout.Write(output); err != nil {
-		fmt.Fprintf(os.Stderr, "write report: %v\n", err)
-		return 1
-	}
-	return 0
+	return action()
 }
 
 func expectedResourceLimits(limits *report.ResourceLimits) bool {

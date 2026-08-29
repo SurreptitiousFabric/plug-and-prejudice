@@ -13,4 +13,11 @@ const (
 	ProcessWaitDelay             = 2 * time.Second
 	TeardownTimeout              = 3 * time.Second
 	TeardownCommandTimeout       = 1 * time.Second
+	OperationTimeout             = ScopeRuntime + ProcessWaitDelay + TeardownTimeout + ProcessWaitDelay
 )
+
+func ValidTimingPolicy() bool {
+	return WallTime+ProcessWaitDelay < ScopeRuntime &&
+		TeardownCommandTimeout <= TeardownTimeout &&
+		OperationTimeout == ScopeRuntime+ProcessWaitDelay+TeardownTimeout+ProcessWaitDelay
+}

@@ -3,11 +3,14 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -118,6 +121,78 @@ func TestRequireStaticELFRejectsDynamicELF(t *testing.T) {
 	if err := requireStaticELF(file); err == nil || !strings.Contains(err.Error(), "dynamically linked") {
 		t.Fatalf("dynamic ELF result = %v", err)
 	}
+}
+
+func TestExtraFilesMapExactScannerAndTargetIdentitiesToThreeAndFour(t *testing.T) {
+	if os.Getenv("PLUG_PREJUDICE_DESCRIPTOR_IDENTITY_CHILD") == "1" {
+		for descriptor, variable := range map[int]string{3: "PLUG_PREJUDICE_EXPECT_FD3", 4: "PLUG_PREJUDICE_EXPECT_FD4"} {
+			file := os.NewFile(uintptr(descriptor), "inherited")
+			if file == nil {
+				t.Fatalf("descriptor %d is unavailable", descriptor)
+			}
+			got, err := descriptorIdentity(file)
+			if err != nil || got != os.Getenv(variable) {
+				t.Fatalf("descriptor %d identity = %q, %v; want %q", descriptor, got, err, os.Getenv(variable))
+			}
+		}
+		return
+	}
+	var unrelated []*os.File
+	for range 24 {
+		file, err := os.Open("/dev/null")
+		if err != nil {
+			t.Fatal(err)
+		}
+		unrelated = append(unrelated, file)
+		defer file.Close()
+	}
+	scanner, err := os.Open("/usr/bin/true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scanner.Close()
+	target, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	if scanner.Fd() < 20 || target.Fd() < 20 {
+		t.Fatalf("test did not obtain nontrivial parent descriptors: scanner=%d target=%d", scanner.Fd(), target.Fd())
+	}
+	scannerIdentity, err := descriptorIdentity(scanner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetIdentity, err := descriptorIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestExtraFilesMapExactScannerAndTargetIdentitiesToThreeAndFour$")
+	cmd.ExtraFiles = []*os.File{scanner, target}
+	cmd.Env = append(os.Environ(),
+		"PLUG_PREJUDICE_DESCRIPTOR_IDENTITY_CHILD=1",
+		"PLUG_PREJUDICE_EXPECT_FD3="+scannerIdentity,
+		"PLUG_PREJUDICE_EXPECT_FD4="+targetIdentity,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("descriptor identity child: %v: %s", err, output)
+	}
+}
+
+func descriptorIdentity(file *os.File) (string, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return "", errors.New("descriptor stat identity unavailable")
+	}
+	return strconv.FormatUint(uint64(stat.Dev), 10) + ":" + strconv.FormatUint(stat.Ino, 10) + ":" + info.Mode().Type().String(), nil
 }
 
 func TestBubblewrapIsolation(t *testing.T) {

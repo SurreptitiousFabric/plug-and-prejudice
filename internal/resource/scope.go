@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,6 +29,22 @@ type Manager struct {
 	Systemctl  string
 	CgroupRoot string
 	ProcCgroup string
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
+}
+
+type operationDeadlines struct {
+	operationEnd time.Time
+	runEnd       time.Time
+}
+
+func deadlinesFor(start time.Time) operationDeadlines {
+	operationEnd := start.Add(policy.OperationTimeout)
+	return operationDeadlines{
+		operationEnd: operationEnd,
+		runEnd:       operationEnd.Add(-(policy.TeardownTimeout + 2*policy.ProcessWaitDelay)),
+	}
 }
 
 func DefaultManager() (Manager, error) {
@@ -67,19 +85,35 @@ func (m Manager) Run(ctx context.Context, unit, executable string, arguments []s
 	if err != nil {
 		return err
 	}
-	timed, cancel := context.WithTimeout(ctx, policy.ScopeRuntime+policy.TeardownTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(timed, procPath, args...)
+	if !policy.ValidTimingPolicy() {
+		return errors.New("resource timing policy is internally inconsistent")
+	}
+	deadlines := deadlinesFor(time.Now())
+	runContext, cancelRun := context.WithDeadline(ctx, deadlines.runEnd)
+	defer cancelRun()
+	cmd := exec.CommandContext(runContext, procPath, args...)
 	cmd.WaitDelay = policy.ProcessWaitDelay
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdin = m.Stdin
+	if cmd.Stdin == nil {
+		cmd.Stdin = os.Stdin
+	}
+	cmd.Stdout = m.Stdout
+	if cmd.Stdout == nil {
+		cmd.Stdout = os.Stdout
+	}
+	cmd.Stderr = m.Stderr
+	if cmd.Stderr == nil {
+		cmd.Stderr = os.Stderr
+	}
 	cmd.Env, err = userManagerEnvironment()
 	if err != nil {
 		return fmt.Errorf("construct trusted systemd-run environment: %w", err)
 	}
 	runErr := cmd.Run()
-	teardownErr := m.Terminate(context.Background(), unit)
+	teardownEnd := minTime(deadlines.operationEnd.Add(-policy.ProcessWaitDelay), time.Now().Add(policy.TeardownTimeout))
+	teardownContext, cancelTeardown := context.WithDeadline(context.WithoutCancel(ctx), teardownEnd)
+	teardownErr := m.Terminate(teardownContext, unit)
+	cancelTeardown()
 	if runErr != nil {
 		if teardownErr != nil {
 			return errors.Join(runErr, teardownErr)
@@ -175,13 +209,18 @@ func (m Manager) VerifyRuntime(ctx context.Context, unit string) error {
 }
 
 func verifyRuntimeMax(value string) error {
-	text := strings.TrimSpace(value)
+	text := strings.TrimSuffix(value, "\n")
+	if strings.Contains(text, "\n") || !runtimeDurationPattern.MatchString(text) {
+		return fmt.Errorf("RuntimeMaxUSec is %q, expected supported systemd duration syntax", value)
+	}
 	duration, err := time.ParseDuration(text)
 	if err != nil || duration <= 0 || duration > policy.ScopeRuntime {
 		return fmt.Errorf("RuntimeMaxUSec is %q, expected at most %s", text, policy.ScopeRuntime)
 	}
 	return nil
 }
+
+var runtimeDurationPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?(?:us|ms|s)$`)
 
 func (m Manager) Terminate(ctx context.Context, unit string) error {
 	if !validUnitName(unit) {
@@ -194,6 +233,9 @@ func (m Manager) Terminate(ctx context.Context, unit string) error {
 	if err != nil {
 		return fmt.Errorf("query resource scope before teardown: %w", err)
 	}
+	if len(loadState) > 128 {
+		return errors.New("resource scope LoadState response exceeds limit")
+	}
 	if strings.TrimSpace(string(loadState)) == "not-found" {
 		return nil
 	}
@@ -201,10 +243,13 @@ func (m Manager) Terminate(ctx context.Context, unit string) error {
 	if err != nil {
 		return fmt.Errorf("query resource scope cgroup: %w", err)
 	}
+	if len(controlGroup) > 4096 {
+		return errors.New("resource scope ControlGroup response exceeds limit")
+	}
 	controlGroupText := strings.TrimSpace(string(controlGroup))
 	if controlGroupText == "" {
 		activeState, stateErr := m.systemctl(teardown, "show", unit, "--property=ActiveState", "--value", "--no-pager")
-		if stateErr == nil && (strings.TrimSpace(string(activeState)) == "inactive" || strings.TrimSpace(string(activeState)) == "failed") {
+		if stateErr == nil && len(activeState) <= 128 && terminalStateWithoutControlGroup(strings.TrimSpace(string(loadState)), strings.TrimSpace(string(activeState))) {
 			return nil
 		}
 		return errors.New("resource scope has no ControlGroup but is not confirmed inactive")
@@ -217,13 +262,29 @@ func (m Manager) Terminate(ctx context.Context, unit string) error {
 	killContext, killCancel := context.WithTimeout(teardown, policy.TeardownCommandTimeout)
 	_, killErr := m.systemctl(killContext, "kill", unit, "--kill-whom=all", "--signal=KILL", "--no-block")
 	killCancel()
-	if err := waitCgroupEmpty(teardown, directory); err == nil {
+	waitErr := waitCgroupEmpty(teardown, directory)
+	return teardownResult(killErr, waitErr)
+}
+
+func terminalStateWithoutControlGroup(loadState, activeState string) bool {
+	return loadState == "loaded" && (activeState == "inactive" || activeState == "failed")
+}
+
+func teardownResult(killErr, waitErr error) error {
+	if waitErr == nil {
 		return nil
-	} else if killErr != nil {
-		return errors.Join(fmt.Errorf("request whole-scope termination: %w", killErr), err)
-	} else {
-		return fmt.Errorf("verify whole-scope termination: %w", err)
 	}
+	if killErr != nil {
+		return errors.Join(fmt.Errorf("request whole-scope termination: %w", killErr), waitErr)
+	}
+	return fmt.Errorf("verify whole-scope termination: %w", waitErr)
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }
 
 func (m Manager) systemctl(ctx context.Context, arguments ...string) ([]byte, error) {
