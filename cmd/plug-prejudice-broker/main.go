@@ -6,21 +6,26 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/resource"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/sandbox"
+	"golang.org/x/sys/unix"
 )
 
 var pluginIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 const maxInstalledPlugins = 1024
+const pluginReadBatchEntries = 128
 
 type pluginList struct {
 	SchemaVersion string   `json:"schemaVersion"`
@@ -42,21 +47,9 @@ func run() int {
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return 2
 	}
-	if flags.NArg() != 0 || (*list == (*pluginID != "")) || (!*list && !validPluginID(*pluginID)) || (*list && *resourceScope != "") {
+	if flags.NArg() != 0 || (*list == (*pluginID != "")) || (!*list && !validPluginID(*pluginID)) {
 		fmt.Fprintln(os.Stderr, "usage: plug-prejudice-broker (--list | --plugin ID)")
 		return 2
-	}
-	if *list {
-		plugins, err := installedPluginIDs(*pluginsRoot)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "list plugins: %v\n", err)
-			return 1
-		}
-		if err := json.NewEncoder(os.Stdout).Encode(pluginList{SchemaVersion: "1.0.0", Plugins: plugins}); err != nil {
-			fmt.Fprintf(os.Stderr, "write plugin list: %v\n", err)
-			return 1
-		}
-		return 0
 	}
 	manager, err := resource.DefaultManager()
 	if err != nil {
@@ -70,11 +63,11 @@ func run() int {
 			return 1
 		}
 		executable := fmt.Sprintf("/proc/%d/exe", os.Getpid())
-		arguments := []string{
-			"--plugin", *pluginID,
-			"--plugins-root", *pluginsRoot,
-			"--scanner", *scanner,
-			"--resource-scope", unit,
+		arguments := []string{"--plugins-root", *pluginsRoot, "--scanner", *scanner, "--resource-scope", unit}
+		if *list {
+			arguments = append([]string{"--list"}, arguments...)
+		} else {
+			arguments = append([]string{"--plugin", *pluginID}, arguments...)
 		}
 		if err := manager.Run(context.Background(), unit, executable, arguments); err != nil {
 			var exited *exec.ExitError
@@ -90,15 +83,32 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "verify resource scope: %v\n", err)
 		return 1
 	}
+	if err := manager.VerifyRuntime(context.Background(), *resourceScope); err != nil {
+		fmt.Fprintf(os.Stderr, "verify resource scope lifetime: %v\n", err)
+		return 1
+	}
 	if err := resource.ApplyProcessLimits(); err != nil {
 		fmt.Fprintf(os.Stderr, "apply process limits: %v\n", err)
 		return 1
 	}
-	target, err := installedTarget(*pluginsRoot, *pluginID)
+	if *list {
+		plugins, err := installedPluginIDs(*pluginsRoot)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "list plugins: %v\n", err)
+			return 1
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(pluginList{SchemaVersion: "1.0.0", Plugins: plugins}); err != nil {
+			fmt.Fprintf(os.Stderr, "write plugin list: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	target, err := openInstalledTarget(*pluginsRoot, *pluginID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve plugin: %v\n", err)
 		return 1
 	}
+	defer target.Close()
 	runner, err := sandbox.DefaultRunner()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -132,27 +142,31 @@ func expectedResourceLimits(limits *report.ResourceLimits) bool {
 }
 
 func installedPluginIDs(root string) ([]string, error) {
-	rootInfo, err := os.Lstat(root)
+	directory, err := openDirectoryPath(root)
 	if err != nil {
-		return nil, fmt.Errorf("inspect plugins root: %w", err)
+		return nil, fmt.Errorf("open plugins root: %w", err)
 	}
-	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("plugins root must be a real directory")
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil, fmt.Errorf("read plugins root: %w", err)
-	}
-	plugins := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if !validPluginID(entry.Name()) || entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
-			continue
+	defer directory.Close()
+	plugins := make([]string, 0, maxInstalledPlugins)
+	for {
+		entries, readErr := directory.ReadDir(pluginReadBatchEntries)
+		for _, entry := range entries {
+			if len(plugins) >= maxInstalledPlugins {
+				return nil, fmt.Errorf("plugins root entry count exceeds %d", maxInstalledPlugins)
+			}
+			if !validPluginID(entry.Name()) || entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+				return nil, errors.New("plugins root contains an unacceptable entry")
+			}
+			plugins = append(plugins, entry.Name())
 		}
-		plugins = append(plugins, entry.Name())
-		if len(plugins) > maxInstalledPlugins {
-			return nil, fmt.Errorf("installed plugin count exceeds %d", maxInstalledPlugins)
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("read plugins root: %w", readErr)
 		}
 	}
+	sort.Strings(plugins)
 	return plugins, nil
 }
 
@@ -160,26 +174,56 @@ func validPluginID(id string) bool {
 	return pluginIDPattern.MatchString(id) && !strings.Contains(id, "..")
 }
 
-func installedTarget(root, id string) (string, error) {
+func openInstalledTarget(root, id string) (*os.File, error) {
 	if !validPluginID(id) {
-		return "", errors.New("invalid plugin ID")
+		return nil, errors.New("invalid plugin ID")
 	}
-	rootInfo, err := os.Lstat(root)
+	rootFile, err := openDirectoryPath(root)
 	if err != nil {
-		return "", fmt.Errorf("inspect plugins root: %w", err)
+		return nil, fmt.Errorf("open plugins root: %w", err)
 	}
-	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("plugins root must be a real directory")
-	}
-	target := filepath.Join(root, id)
-	info, err := os.Lstat(target)
+	defer rootFile.Close()
+	fd, err := unix.Openat2(int(rootFile.Fd()), id, &unix.OpenHow{
+		Flags: unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC,
+		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS |
+			unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV,
+	})
 	if err != nil {
-		return "", fmt.Errorf("inspect selected plugin: %w", err)
+		return nil, fmt.Errorf("open selected plugin beneath root: %w", err)
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("selected plugin must be a real directory")
+	target := os.NewFile(uintptr(fd), id)
+	info, err := target.Stat()
+	if err != nil {
+		_ = target.Close()
+		return nil, errors.New("selected plugin descriptor metadata is unavailable")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.IsDir() || stat.Nlink == 0 {
+		_ = target.Close()
+		return nil, errors.New("selected plugin descriptor is not a live directory")
 	}
 	return target, nil
+}
+
+func openDirectoryPath(name string) (*os.File, error) {
+	absolute, err := filepath.Abs(name)
+	if err != nil {
+		return nil, err
+	}
+	fd, err := unix.Openat2(unix.AT_FDCWD, absolute, &unix.OpenHow{
+		Flags:   unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC,
+		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), absolute)
+	info, err := file.Stat()
+	if err != nil || !info.IsDir() {
+		_ = file.Close()
+		return nil, errors.New("opened path is not a directory")
+	}
+	return file, nil
 }
 
 func defaultPluginsRoot() string {

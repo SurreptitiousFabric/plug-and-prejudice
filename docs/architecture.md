@@ -41,12 +41,15 @@ LLM dependency.
 
 ### Broker
 
-- Resolves an installed plugin identity to an approved canonical directory.
+- Lists plugin identities incrementally only after entering verified resource
+  containment, and resolves a selected identity beneath a pinned plugin root.
 - Records Git revision and working-tree state without running repository hooks.
 - Constructs a fixed Bubblewrap command from trusted constants.
 - Creates a controlled output area and applies resource/time limits.
 - Re-enters a randomized, verified systemd user scope before resolving the
-  target, then applies process rlimits and constructs Bubblewrap containment.
+  target, verifies the actual runtime limit, then applies process rlimits and
+  constructs Bubblewrap containment. The outer broker terminates the whole
+  scope after completion or failure.
 - Fails closed if required isolation cannot be established.
 
 ### Deterministic scanner
@@ -55,6 +58,8 @@ LLM dependency.
 - Reads only `/target` and writes only its controlled output.
 - Does not execute target files or invoke language runtimes on them.
 - Applies bounded inventory, parsing, data-flow, correlation, and reporting.
+- Aborts rather than emitting normal evidence when descriptor-rooted traversal
+  detects target mutation during observation.
 
 ### Optional LLM stage
 

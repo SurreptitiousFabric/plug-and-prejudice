@@ -53,7 +53,10 @@ type walker struct {
 	limits Limits
 	result Result
 	digest hashWriter
+	hook   func(event, filePath string)
 }
+
+var ErrTargetChanged = errors.New("target changed during scan")
 
 type hashWriter struct{ parts [][]byte }
 
@@ -72,25 +75,30 @@ func (h *hashWriter) sum() string {
 }
 
 func Scan(target string, limits Limits) (Result, error) {
+	return scan(target, limits, nil)
+}
+
+func scan(target string, limits Limits, hook func(event, filePath string)) (Result, error) {
 	if limits.MaxFiles <= 0 || limits.MaxDepth <= 0 || limits.MaxFileBytes <= 0 || limits.MaxReadBytes <= 0 || limits.MaxBinaryFileBytes <= 0 || limits.MaxBinaryReadBytes <= 0 {
 		return Result{}, errors.New("all inventory limits must be positive")
-	}
-	info, err := os.Stat(target)
-	if err != nil {
-		return Result{}, fmt.Errorf("stat target: %w", err)
-	}
-	if !info.IsDir() {
-		return Result{}, errors.New("target must be a directory")
 	}
 	root, err := os.OpenRoot(target)
 	if err != nil {
 		return Result{}, fmt.Errorf("open target root: %w", err)
 	}
 	defer root.Close()
+	rootInfo, err := root.Lstat(".")
+	if err != nil || !rootInfo.IsDir() {
+		return Result{}, errors.New("opened target root is not a directory")
+	}
 
-	w := &walker{limits: limits, result: Result{Contents: make(map[string][]byte)}}
+	w := &walker{limits: limits, result: Result{Contents: make(map[string][]byte)}, hook: hook}
 	if err := w.walk(root, ".", 0); err != nil {
 		return Result{}, err
+	}
+	rootAfter, err := root.Lstat(".")
+	if err != nil || !stableMetadata(rootInfo, rootAfter) {
+		return Result{}, changed("target root metadata changed")
 	}
 	sort.Slice(w.result.Files, func(i, j int) bool { return w.result.Files[i].Path < w.result.Files[j].Path })
 	for _, file := range w.result.Files {
@@ -107,8 +115,7 @@ func (w *walker) walk(root *os.Root, relative string, depth int) error {
 	}
 	entries, err := fs.ReadDir(root.FS(), ".")
 	if err != nil {
-		w.scanError("read-directory", err.Error(), displayPath(relative))
-		return nil
+		return fmt.Errorf("read directory %q: %w", displayPath(relative), err)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	for _, entry := range entries {
@@ -123,8 +130,7 @@ func (w *walker) walk(root *os.Root, relative string, depth int) error {
 		}
 		info, err := root.Lstat(name)
 		if err != nil {
-			w.scanError("lstat", err.Error(), childPath)
-			continue
+			return changed("directory entry disappeared or changed before inspection: " + childPath)
 		}
 		file := report.File{Path: childPath, Mode: info.Mode().String(), Size: info.Size()}
 		switch {
@@ -136,36 +142,61 @@ func (w *walker) walk(root *os.Root, relative string, depth int) error {
 			} else {
 				file.LinkTarget = target
 			}
+			if verifyErr := verifyPathStable(root, name, info, childPath); verifyErr != nil {
+				return verifyErr
+			}
 			w.result.Files = append(w.result.Files, file)
 		case info.IsDir():
 			file.Kind = "directory"
 			w.result.Files = append(w.result.Files, file)
 			child, openErr := root.OpenRoot(name)
 			if openErr != nil {
-				w.scanError("open-directory", openErr.Error(), childPath)
-				continue
+				return changed("directory could not be pinned after enumeration: " + childPath)
 			}
 			openedInfo, statErr := child.Lstat(".")
 			if statErr != nil || !sameFile(info, openedInfo) {
 				_ = child.Close()
-				w.scanError("changed-during-scan", "directory identity changed while it was opened", childPath)
-				continue
+				return changed("directory identity changed while it was opened: " + childPath)
 			}
-			_ = w.walk(child, childPath, depth+1)
+			w.callHook("directory-opened", childPath)
+			if walkErr := w.walk(child, childPath, depth+1); walkErr != nil {
+				_ = child.Close()
+				return walkErr
+			}
+			closedInfo, statErr := child.Lstat(".")
 			_ = child.Close()
+			if statErr != nil || !stableMetadata(openedInfo, closedInfo) {
+				return changed("directory metadata changed during traversal: " + childPath)
+			}
 		case info.Mode().IsRegular():
 			file.Kind = "regular"
 			if isGitDatabasePath(childPath) {
 				file.SkipReason = "git-internal-database"
+				if verifyErr := verifyPathStable(root, name, info, childPath); verifyErr != nil {
+					return verifyErr
+				}
 			} else {
-				w.inspectRegular(root, name, info, &file)
+				if inspectErr := w.inspectRegular(root, name, info, &file); inspectErr != nil {
+					return inspectErr
+				}
 			}
 			w.result.Files = append(w.result.Files, file)
 		default:
 			file.Kind = specialKind(info.Mode())
 			w.result.Files = append(w.result.Files, file)
 			w.limit("special-file", "special file was inventoried but not opened", childPath)
+			if verifyErr := verifyPathStable(root, name, info, childPath); verifyErr != nil {
+				return verifyErr
+			}
 		}
+	}
+	return nil
+}
+
+func verifyPathStable(root *os.Root, name string, before fs.FileInfo, filePath string) error {
+	after, err := root.Lstat(name)
+	if err != nil || !stableMetadata(before, after) {
+		return changed("entry metadata changed during inspection: " + filePath)
 	}
 	return nil
 }
@@ -175,44 +206,45 @@ func isGitDatabasePath(name string) bool {
 	return strings.HasPrefix(clean, ".git/objects/") || strings.HasPrefix(clean, ".git/logs/")
 }
 
-func (w *walker) inspectRegular(root *os.Root, name string, expected fs.FileInfo, out *report.File) {
+func (w *walker) inspectRegular(root *os.Root, name string, expected fs.FileInfo, out *report.File) error {
 	f, err := root.Open(name)
 	if err != nil {
-		w.scanError("open-file", err.Error(), out.Path)
-		return
+		return changed("file could not be pinned after enumeration: " + out.Path)
 	}
 	defer f.Close()
 	opened, err := f.Stat()
 	if err != nil || !sameFile(expected, opened) || !opened.Mode().IsRegular() {
-		w.scanError("changed-during-scan", "file identity or type changed while it was opened", out.Path)
-		return
+		return changed("file identity or type changed while it was opened: " + out.Path)
 	}
+	w.callHook("file-opened", out.Path)
 	header := make([]byte, 4)
 	_, headerErr := io.ReadFull(f, header)
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		w.scanError("seek-file", err.Error(), out.Path)
-		return
+		return w.verifyRegularStable(f, opened, out.Path)
 	}
 	if headerErr == nil && isELF(header) {
-		w.inspectELF(f, expected, out)
-		return
+		if err := w.inspectELF(f, expected, out); err != nil {
+			return err
+		}
+		return w.verifyRegularStable(f, opened, out.Path)
 	}
 	if expected.Size() > w.limits.MaxFileBytes {
 		w.limit("max-file-bytes", "non-ELF file exceeds the individual source inspection limit", out.Path)
-		return
+		return w.verifyRegularStable(f, opened, out.Path)
 	}
 	if w.result.ReadBytes+expected.Size() > w.limits.MaxReadBytes {
 		w.limit("max-total-bytes", "total source-content inspection limit reached", out.Path)
-		return
+		return w.verifyRegularStable(f, opened, out.Path)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, w.limits.MaxFileBytes+1))
 	if err != nil {
 		w.scanError("read-file", err.Error(), out.Path)
-		return
+		return w.verifyRegularStable(f, opened, out.Path)
 	}
 	if int64(len(data)) > w.limits.MaxFileBytes {
 		w.limit("changed-during-scan", "file grew beyond the inspection limit while being read", out.Path)
-		return
+		return changed("file grew while being read: " + out.Path)
 	}
 	w.result.ReadBytes += int64(len(data))
 	hash := sha256.Sum256(data)
@@ -220,27 +252,49 @@ func (w *walker) inspectRegular(root *os.Root, name string, expected fs.FileInfo
 	out.ContentType = http.DetectContentType(data)
 	out.Inspected = true
 	w.result.Contents[out.Path] = data
+	w.callHook("file-read", out.Path)
+	return w.verifyRegularStable(f, opened, out.Path)
 }
 
-func (w *walker) inspectELF(f *os.File, expected fs.FileInfo, out *report.File) {
+func (w *walker) inspectELF(f *os.File, expected fs.FileInfo, out *report.File) error {
 	if expected.Size() > w.limits.MaxBinaryFileBytes {
 		w.limit("max-binary-file-bytes", "ELF file exceeds the individual binary inspection limit", out.Path)
-		return
+		return nil
 	}
 	if w.result.BinaryBytes+expected.Size() > w.limits.MaxBinaryReadBytes {
 		w.limit("max-binary-total-bytes", "total ELF inspection limit reached", out.Path)
-		return
+		return nil
 	}
 	data, err := io.ReadAll(io.LimitReader(f, w.limits.MaxBinaryFileBytes+1))
 	if err != nil {
 		w.scanError("read-binary", err.Error(), out.Path)
-		return
+		return w.verifyRegularStable(f, expected, out.Path)
 	}
 	if int64(len(data)) != expected.Size() {
 		w.scanError("changed-during-scan", "ELF size changed while it was read", out.Path)
-		return
+		return changed("ELF size changed while it was read: " + out.Path)
 	}
 	w.recordELF(data, out)
+	w.callHook("file-read", out.Path)
+	return nil
+}
+
+func (w *walker) verifyRegularStable(file *os.File, before fs.FileInfo, filePath string) error {
+	after, err := file.Stat()
+	if err != nil || !stableMetadata(before, after) {
+		return changed("file metadata changed during inspection: " + filePath)
+	}
+	return nil
+}
+
+func (w *walker) callHook(event, filePath string) {
+	if w.hook != nil {
+		w.hook(event, filePath)
+	}
+}
+
+func changed(message string) error {
+	return fmt.Errorf("%w: %s", ErrTargetChanged, message)
 }
 
 func (w *walker) recordELF(data []byte, out *report.File) {
@@ -331,4 +385,16 @@ func sameFile(a, b fs.FileInfo) bool {
 		return sa.Dev == sb.Dev && sa.Ino == sb.Ino
 	}
 	return os.SameFile(a, b)
+}
+
+func stableMetadata(a, b fs.FileInfo) bool {
+	if !sameFile(a, b) || a.Mode() != b.Mode() || a.Size() != b.Size() {
+		return false
+	}
+	sa, okA := a.Sys().(*syscall.Stat_t)
+	sb, okB := b.Sys().(*syscall.Stat_t)
+	if !okA || !okB {
+		return false
+	}
+	return sa.Nlink == sb.Nlink && sa.Mtim == sb.Mtim && sa.Ctim == sb.Ctim
 }

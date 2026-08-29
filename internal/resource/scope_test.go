@@ -2,12 +2,16 @@ package resource
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
 )
@@ -95,6 +99,19 @@ func TestPolicyValuesRemainIntentional(t *testing.T) {
 	}
 }
 
+func TestVerifyRuntimeMaxAcceptsExactAndRejectsMissingUnlimitedOrWeak(t *testing.T) {
+	for _, value := range []string{"35s", "35000000us", "34.5s"} {
+		if err := verifyRuntimeMax(value); err != nil {
+			t.Errorf("verifyRuntimeMax(%q) = %v", value, err)
+		}
+	}
+	for _, value := range []string{"", "infinity", "0", "35.000001s", "1min"} {
+		if err := verifyRuntimeMax(value); err == nil {
+			t.Errorf("verifyRuntimeMax(%q) accepted unsafe value", value)
+		}
+	}
+}
+
 func TestLiveSystemdScopeEnforcesVerifiableControls(t *testing.T) {
 	if os.Getenv("PLUG_PREJUDICE_RESOURCE_HELPER") == "1" {
 		manager, err := DefaultManager()
@@ -102,6 +119,9 @@ func TestLiveSystemdScopeEnforcesVerifiableControls(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := manager.Verify(os.Getenv("PLUG_PREJUDICE_RESOURCE_UNIT")); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.VerifyRuntime(context.Background(), os.Getenv("PLUG_PREJUDICE_RESOURCE_UNIT")); err != nil {
 			t.Fatal(err)
 		}
 		return
@@ -173,6 +193,44 @@ func TestLiveSystemdScopeEnforcesTasksMax(t *testing.T) {
 	if err := manager.Run(context.Background(), unit, executable, []string{"-test.run=^TestLiveSystemdScopeEnforcesTasksMax$"}); err != nil {
 		t.Fatalf("task-limit helper failed: %v", err)
 	}
+}
+
+func TestLiveSystemdScopeKillsSurvivingDescendant(t *testing.T) {
+	if os.Getenv("PLUG_PREJUDICE_RESOURCE_HELPER") == "descendant" {
+		child := exec.Command("/usr/bin/sleep", "30")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(os.Getenv("PLUG_PREJUDICE_DESCENDANT_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	manager, unit, executable := liveScopeTest(t)
+	pidFile := filepath.Join(t.TempDir(), "descendant.pid")
+	t.Setenv("PLUG_PREJUDICE_RESOURCE_HELPER", "descendant")
+	t.Setenv("PLUG_PREJUDICE_DESCENDANT_PID", pidFile)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	_ = manager.Run(ctx, unit, executable, []string{"-test.run=^TestLiveSystemdScopeKillsSurvivingDescendant$"})
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read descendant pid: %v", err)
+	}
+	pid, err := strconv.Atoi(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(policy.TeardownTimeout)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("descendant pid %d survived scope teardown", pid)
 }
 
 func liveScopeTest(t *testing.T) (Manager, string, string) {

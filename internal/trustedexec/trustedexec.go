@@ -78,6 +78,13 @@ func (e *Executable) Close() error {
 	return e.file.Close()
 }
 
+func (e *Executable) File() *os.File {
+	if e == nil {
+		return nil
+	}
+	return e.file
+}
+
 func (e *Executable) CommandPath(arguments ...string) (string, []string, error) {
 	if e == nil || e.file == nil {
 		return "", nil, errors.New("trusted executable descriptor is unavailable")
