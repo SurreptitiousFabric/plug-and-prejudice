@@ -83,6 +83,15 @@ retained the observation while the compared source retained no exact match; it
 does not establish that either analyzer is wrong. The finding remains asserted
 by Plug & Prejudice when its supporting observation came from Omarchy.
 
+Resource comparison identity in schema 2.0.0 is the explicitly versioned,
+injective `resource-subject/v1` representation of the exact `(kind, access,
+value)` triple. Each component carries its decimal UTF-8 byte length before its
+bytes; delimiter joining is not accepted. Consequently embedded NUL, control,
+escape-like, prefix/suffix, and Unicode text cannot move data between fields or
+make distinct triples compare equal. This is structural equality rather than a
+probabilistic hash, and no additional resource fields participate in the
+subject.
+
 ## Golden fixture
 
 `internal/report/testdata/report-v2.0.0.json` is a representative conforming

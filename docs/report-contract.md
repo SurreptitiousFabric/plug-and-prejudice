@@ -159,6 +159,15 @@ either analyzer is wrong. The
 relationships themselves are validator-derived structural graph edges and do
 not carry provenance in schema 2.0.0. Whether a later schema should attribute
 comparison-edge construction separately remains a design question.
+
+Resource comparison subjects use the versioned `resource-subject/v1`
+encoding of exactly `kind`, `access`, and `value`, in that order. Each field is
+encoded as its decimal UTF-8 byte length followed by its exact bytes. This is
+an injective structural encoding, not a truncated hash: subject equality holds
+exactly when all three fields are equal, including when fields contain NUL,
+colons, control characters, escape-like text, or Unicode. Resource sensitivity,
+dynamic status, scope, confidence, and other observation fields are not part of
+semantic subject identity. Operation subject representation is unchanged.
 The current pinned Omarchy PR #8439 format does not supply a target snapshot
 root.
 Its trusted importer calculates `documentSha256` from the exact pinned audit

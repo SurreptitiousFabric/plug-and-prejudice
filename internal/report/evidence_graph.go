@@ -296,7 +296,7 @@ func (r Report) semanticSubject(kind NodeKind, id string) (string, bool) {
 	case NodeResource:
 		for _, item := range r.Resources {
 			if item.ID == id {
-				return item.Kind + "\x00" + item.Access + "\x00" + item.Value, true
+				return resourceComparisonSubject(item.Kind, item.Access, item.Value), true
 			}
 		}
 	}

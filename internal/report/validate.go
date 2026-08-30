@@ -922,7 +922,7 @@ func semanticSubjectByReference(r Report, kind NodeKind, reference string) (stri
 	case NodeResource:
 		for _, item := range r.Resources {
 			if item.Reference == reference {
-				return item.Kind + "\x00" + item.Access + "\x00" + item.Value, true
+				return resourceComparisonSubject(item.Kind, item.Access, item.Value), true
 			}
 		}
 	}
