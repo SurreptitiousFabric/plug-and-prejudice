@@ -22,17 +22,35 @@ MIT License:
 Plug & Prejudice includes compiled portions of `golang.org/x/sys` version
 0.47.0. That project is distributed under a BSD 3-Clause license:
 
-> Copyright 2009 The Go Authors.
->
-> Redistribution and use in source and binary forms, with or without
-> modification, are permitted provided that source redistributions retain the
-> copyright, conditions, and disclaimer; binary redistributions reproduce them
-> in accompanying materials; and neither Google LLC nor contributor names are
-> used for endorsement without permission.
->
-> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-> WITHOUT WARRANTIES, AND THEY ARE NOT LIABLE FOR DIRECT, INDIRECT, INCIDENTAL,
-> SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING FROM ITS USE.
+<!-- BEGIN VERBATIM LICENSE: golang.org/x/sys v0.47.0 -->
+Copyright 2009 The Go Authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google LLC nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+<!-- END VERBATIM LICENSE: golang.org/x/sys v0.47.0 -->
 
 Plug & Prejudice includes compiled portions of `mvdan.cc/sh/v3` version
 3.13.1. That project is distributed under the following BSD 3-Clause license:

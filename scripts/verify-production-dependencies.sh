@@ -51,4 +51,9 @@ for required_notice in \
 done
 
 go mod verify
+module_dir=$(go list -m -f '{{.Dir}}' golang.org/x/sys)
+scripts/verify-third-party-license-block.sh \
+  THIRD_PARTY_NOTICES.md \
+  'golang.org/x/sys v0.47.0' \
+  "$module_dir/LICENSE"
 echo "Production Go dependency set and third-party notice are current"
