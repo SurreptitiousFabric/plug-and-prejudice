@@ -429,7 +429,25 @@ Item {
     var analyzer = plainInline(provenance.analyzer || "analyzer unavailable", 120)
     var version = plainInline(provenance.analyzerVersion || "version unavailable", 80)
     var source = plainInline(provenance.evidenceSource || "source unavailable", 80)
-    return " · rule " + rule + " · " + analyzer + " " + version + " · source " + source
+    var evidence = Array.isArray(row && row.evidence) ? firstValue(row.evidence) : (row ? row.evidence : null)
+    var input = plainInline(evidence && evidence.inputId ? evidence.inputId : "input unavailable", 120)
+    return " · rule " + rule + " · analyzer " + analyzer + " · analyzer version " + version + " · evidence source " + source + " · evidence input " + input
+  }
+
+  function evidenceInputSummary() {
+    var inputs = values(currentReport ? currentReport.evidenceInputs : null)
+    var rendered = []
+    for (var i = 0; i < inputs.length && rendered.length < 8; i++) {
+      var input = inputs[i] || {}
+      if (input.type !== "omarchy-audit") continue
+      var item = "External evidence " + plainInline(input.id || "input unavailable", 120)
+      if (input.documentSha256) item += " · document SHA-256 " + plainInline(input.documentSha256, 64)
+      else item += " · document SHA-256 unavailable"
+      if (input.subjectRootDigest) item += " · declared subject snapshot digest " + plainInline(input.subjectRootDigest, 64)
+      else item += " · target snapshot binding unavailable"
+      rendered.push(item)
+    }
+    return rendered.length ? rendered.join(" · ") : "No external evidence input"
   }
 
   function evidenceChain(row) {
@@ -804,7 +822,7 @@ Item {
                 width: parent.width
                 spacing: Style.space(2)
                 Accessible.role: Accessible.StaticText
-                Accessible.name: root.reviewSummaryText() + ". " + root.reviewCountsText() + ". " + root.mainReasonsText()
+                Accessible.name: root.reviewSummaryText() + ". " + root.reviewCountsText() + ". " + root.evidenceInputSummary() + ". " + root.mainReasonsText()
 
                 Text {
                   textFormat: Text.PlainText
@@ -815,6 +833,18 @@ Item {
                   font.pixelSize: Style.font.bodySmall
                   font.bold: true
                   wrapMode: Text.WordWrap
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  width: parent.width
+                  text: root.evidenceInputSummary()
+                  color: Qt.darker(root.foreground, 1.3)
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WrapAnywhere
+                  maximumLineCount: 3
+                  elide: Text.ElideRight
                 }
 
                 Text {

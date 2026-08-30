@@ -26,7 +26,11 @@ The Commands section keeps neutral extracted operations visible without turning
 them into warnings. Each row shows a bounded command/action name, bounded
 arguments, dynamic-value status, scope, confidence, and inert source evidence.
 Finding, command, and resource rows also show their stable `PP-` reference and
-structured rule, analyzer version, and evidence-source provenance. Finding
+structured rule, asserting analyzer, analyzer version, evidence source, and
+concrete evidence-input ID as distinct inert fields. External evidence inputs
+show document SHA-256 separately from any declared subject-snapshot digest. A
+document digest is never described as target binding; the current Omarchy
+format is shown as having target snapshot binding unavailable. Finding
 details render at most 16 typed evidence-chain edges as inert plain text.
 The panel's 500-row Findings budget is filled by severity (Critical through
 Informational), and its 500-row Resources budget places sensitive resources

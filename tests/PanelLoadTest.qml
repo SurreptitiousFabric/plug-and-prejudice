@@ -117,15 +117,25 @@ ShellRoot {
       "dynamic": true,
       "scope": "runtime",
       "confidence": "medium",
-      "evidence": {"path": "run.sh", "lineStart": 4, "operation": "curl <hostile>"},
+      "evidence": {"inputId": "input-target\nFAKE", "path": "run.sh", "lineStart": 4, "operation": "curl <hostile>"},
       "provenance": {"ruleId": "rule\nFAKE", "analyzer": "analyzer\u202e", "analyzerVersion": "1\t2", "evidenceSource": "target-source"}
     }
     var renderedOperation = panel.rowTitle(hostileOperation) + panel.rowBody(hostileOperation)
       + panel.rowMeta(hostileOperation) + panel.rowEvidence(hostileOperation)
     if (renderedOperation.indexOf("\u202e") !== -1 || renderedOperation.indexOf("\u061c") !== -1
         || renderedOperation.indexOf("\u001b") !== -1 || renderedOperation.indexOf("\n") !== -1
-        || renderedOperation.indexOf("\t") !== -1 || renderedOperation.indexOf("<img") === -1) {
+        || renderedOperation.indexOf("\t") !== -1 || renderedOperation.indexOf("<img") === -1
+        || renderedOperation.indexOf("analyzer analyzer�") === -1 || renderedOperation.indexOf("evidence source target-source") === -1
+        || renderedOperation.indexOf("evidence input input-target FAKE") === -1) {
       console.error("PLUG_PREJUDICE_PANEL_FAIL hostile operation rendering")
+      Qt.exit(1)
+      return
+    }
+    panel.currentReport = {"evidenceInputs": [{"id": "input-omarchy\nFAKE", "type": "omarchy-audit", "documentSha256": "abc\u202e", "format": "pr8439-732b104", "version": "pr8439-732b104"}]}
+    var inputSummary = panel.evidenceInputSummary()
+    if (inputSummary.indexOf("document SHA-256 abc�") === -1 || inputSummary.indexOf("target snapshot binding unavailable") === -1
+        || inputSummary.indexOf("subject snapshot") !== -1 || inputSummary.indexOf("\n") !== -1 || inputSummary.indexOf("\u202e") !== -1) {
+      console.error("PLUG_PREJUDICE_PANEL_FAIL external evidence identity rendering")
       Qt.exit(1)
       return
     }
