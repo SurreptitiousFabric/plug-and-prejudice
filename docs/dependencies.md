@@ -9,16 +9,19 @@ eliminate, supply-chain and parser risk.
 
 ## Production Go dependencies
 
-The two product binaries have two pinned non-standard-library module dependencies:
+The two product binaries have three pinned non-standard-library module dependencies:
 
 | Module | Version | Purpose | License | Integrity source |
 |---|---:|---|---|---|
 | `github.com/odvcencio/gotreesitter` | `v0.51.0` | Pure-Go, non-executing Python and JavaScript syntax trees with only those two grammar blobs embedded | MIT | Exact module and `go.mod` hashes in `go.sum`; upstream grammar lock records provenance |
+| `golang.org/x/sys` | `v0.47.0` | Official Linux system-call interfaces used by the inherited containment and trusted-executable boundary | BSD-3-Clause | Exact module and `go.mod` hashes in `go.sum` |
 | `mvdan.cc/sh/v3` | `v3.13.1` | Parse shell source into an AST without evaluating it | BSD-3-Clause | Exact module and `go.mod` hashes in `go.sum` |
 
 The scanner imports `mvdan.cc/sh/v3/syntax` and
 `mvdan.cc/sh/v3/fileutil`. It does not import the package's shell interpreter.
-The scanner imports the pure-Go parser runtime. Production builds require the
+The broker and its containment helpers import `x/sys/unix` for Linux
+descriptor-relative opening and related boundary operations. The scanner
+imports the pure-Go parser runtime. Production builds require the
 `grammar_subset_python` and `grammar_subset_javascript` tags so the remaining
 grammar registry is not embedded. The required binary
 distribution notice is retained in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
@@ -30,7 +33,7 @@ go list -tags 'grammar_subset grammar_subset_python grammar_subset_javascript' -
   ./cmd/plug-prejudice ./cmd/plug-prejudice-broker | sort -u
 ```
 
-Only the two reviewed modules above appear. Static linkage and the absence of a
+Only the three reviewed modules above appear. Static linkage and the absence of a
 dynamic interpreter or shared-library requirement are independently checked by
 `scripts/verify-reproducible-build.sh`.
 `scripts/verify-production-dependencies.sh` makes the expected set and required

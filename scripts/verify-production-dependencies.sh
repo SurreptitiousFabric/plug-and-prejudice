@@ -7,6 +7,7 @@ cd -- "$repo_root"
 readonly parser_tags='grammar_subset grammar_subset_python grammar_subset_javascript'
 expected=(
   "github.com/odvcencio/gotreesitter v0.51.0"
+  "golang.org/x/sys v0.47.0"
   "mvdan.cc/sh/v3 v3.13.1"
 )
 mapfile -t actual < <(
@@ -36,6 +37,9 @@ for required_notice in \
 	'0.51.0' \
 	'MIT License' \
 	'Copyright (c) 2026 Oscar Villavicencio' \
+	'golang.org/x/sys' \
+	'0.47.0' \
+	'Copyright 2009 The Go Authors' \
 	'mvdan.cc/sh/v3' \
   '3.13.1' \
   'BSD 3-Clause' \

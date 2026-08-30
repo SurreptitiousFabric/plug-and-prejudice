@@ -19,6 +19,21 @@ MIT License:
 > IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 > FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
+Plug & Prejudice includes compiled portions of `golang.org/x/sys` version
+0.47.0. That project is distributed under a BSD 3-Clause license:
+
+> Copyright 2009 The Go Authors.
+>
+> Redistribution and use in source and binary forms, with or without
+> modification, are permitted provided that source redistributions retain the
+> copyright, conditions, and disclaimer; binary redistributions reproduce them
+> in accompanying materials; and neither Google LLC nor contributor names are
+> used for endorsement without permission.
+>
+> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+> WITHOUT WARRANTIES, AND THEY ARE NOT LIABLE FOR DIRECT, INDIRECT, INCIDENTAL,
+> SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES ARISING FROM ITS USE.
+
 Plug & Prejudice includes compiled portions of `mvdan.cc/sh/v3` version
 3.13.1. That project is distributed under the following BSD 3-Clause license:
 
