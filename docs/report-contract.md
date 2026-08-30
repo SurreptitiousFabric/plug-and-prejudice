@@ -148,6 +148,14 @@ may be connected with `corroborates`; retained-set differences use
 `disagrees-with` plus an informational coverage finding. Neither edge asserts
 correctness or safety: a disagreement means only that one source retained the
 observation while the compared source retained no matching observation. The
+`omarchy-audit-coverage-comparison/v1` rule and
+`omarchy-audit-coverage-disagreement` category are reserved as a pair. A
+finding using either is valid only as the destination of exactly one fully
+validated `disagrees-with` edge with the shape above; zero or multiple incoming
+coverage disagreements fail closed. The finding is asserted by Plug &
+Prejudice even when the retained source observation and evidence input came
+from Omarchy. This records a retained-set difference and does not prove that
+either analyzer is wrong. The
 relationships themselves are validator-derived structural graph edges and do
 not carry provenance in schema 2.0.0. Whether a later schema should attribute
 comparison-edge construction separately remains a design question.

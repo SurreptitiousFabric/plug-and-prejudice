@@ -75,6 +75,14 @@ by the deterministic scanner. This provenance is structural attribution, not
 cryptographic authentication or proof of truth. Typed relationships remain
 validator-derived graph edges without separate provenance in this schema.
 
+The coverage-comparison rule and coverage-difference category are reserved as
+one paired schema shape. Such a finding is accepted only when it is the
+destination of exactly one fully validated `disagrees-with` edge from a
+retained operation or resource. The edge states only that one evidence source
+retained the observation while the compared source retained no exact match; it
+does not establish that either analyzer is wrong. The finding remains asserted
+by Plug & Prejudice when its supporting observation came from Omarchy.
+
 ## Golden fixture
 
 `internal/report/testdata/report-v2.0.0.json` is a representative conforming

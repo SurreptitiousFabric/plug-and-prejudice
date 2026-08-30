@@ -325,6 +325,11 @@ func (r Report) validateWithEvidenceInputPolicies(policies []externalEvidenceInp
 		if duplicateString(finding.Related) {
 			return fmt.Errorf("finding %q repeats a supporting operation", finding.ID)
 		}
+		if finding.Provenance.RuleID == CoverageComparisonRule || finding.Category == CoverageDifferenceCategory {
+			if err := validateReservedCoverageFinding(finding, r.Scan.ScannerVersion); err != nil {
+				return fmt.Errorf("finding %q: %w", finding.ID, err)
+			}
+		}
 	}
 	unknowns := make(map[string]struct{}, len(r.Unknowns))
 	nativeUnknownPaths := make(map[string]bool)
@@ -695,6 +700,22 @@ func validateProvenance(value Provenance, scannerVersion string, recordKind prov
 	return nil
 }
 
+func validateReservedCoverageFinding(value Finding, scannerVersion string) error {
+	if value.Provenance.RuleID != CoverageComparisonRule || value.Category != CoverageDifferenceCategory {
+		return errors.New("coverage comparison rule and coverage-difference category must be used together")
+	}
+	if value.Provenance.Analyzer != DeterministicAnalyzer || value.Provenance.AnalyzerVersion != scannerVersion {
+		return errors.New("coverage-difference finding is not asserted by the trusted scanner")
+	}
+	if value.Claim != ClaimFact || value.Severity != SeverityInformational || value.Confidence != ConfidenceHigh || value.Scope != ScopeUnknown {
+		return errors.New("coverage-difference finding has an invalid claim, severity, confidence, or scope")
+	}
+	if len(value.Evidence) != 1 || len(value.Related) != 0 {
+		return errors.New("coverage-difference finding must have exactly one evidence record and no related operations")
+	}
+	return nil
+}
+
 func duplicateString(values []string) bool {
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
@@ -719,6 +740,7 @@ func validateRelationshipsWithDigest(r Report, kinds map[string]NodeKind, proven
 		to       string
 	}
 	required := make(map[edgeTuple]bool, len(r.Resources)+len(r.Findings)*2)
+	coverageIncoming := make(map[string]int)
 	operationReferences := make(map[string]string, len(r.Operations))
 	for _, operation := range r.Operations {
 		operationReferences[operation.ID] = operation.Reference
@@ -727,6 +749,9 @@ func validateRelationshipsWithDigest(r Report, kinds map[string]NodeKind, proven
 		required[edgeTuple{RelationshipDerivedFrom, NodeResource, resource.Reference, NodeOperation, operationReferences[resource.RelatedOperationID]}] = false
 	}
 	for _, finding := range r.Findings {
+		if finding.Provenance.RuleID == CoverageComparisonRule || finding.Category == CoverageDifferenceCategory {
+			coverageIncoming[finding.Reference] = 0
+		}
 		kind := RelationshipEstablishedBy
 		if finding.Claim == ClaimInference {
 			kind = RelationshipInferredFrom
@@ -792,6 +817,15 @@ func validateRelationshipsWithDigest(r Report, kinds map[string]NodeKind, proven
 			if err := validateComparisonRelationship(r, relationship, provenance); err != nil {
 				return fmt.Errorf("relationship %q: %w", relationship.ID, err)
 			}
+			if relationship.Type == RelationshipDisagreesWith {
+				if _, reserved := coverageIncoming[relationship.To]; !reserved {
+					return fmt.Errorf("relationship %q targets a finding without the reserved coverage rule and category", relationship.ID)
+				}
+				coverageIncoming[relationship.To]++
+				if coverageIncoming[relationship.To] > 1 {
+					return fmt.Errorf("coverage-difference finding %q has more than one incoming disagreement", relationship.To)
+				}
+			}
 			pair := relationship.From + "\x00" + relationship.To
 			if previous, exists := comparisonPairs[pair]; exists {
 				return fmt.Errorf("relationship %q conflicts with existing %s comparison", relationship.ID, previous)
@@ -807,6 +841,11 @@ func validateRelationshipsWithDigest(r Report, kinds map[string]NodeKind, proven
 	for tuple, present := range required {
 		if !present {
 			return fmt.Errorf("required evidence relationship %v is missing", tuple)
+		}
+	}
+	for reference, count := range coverageIncoming {
+		if count != 1 {
+			return fmt.Errorf("coverage-difference finding %q requires exactly one validated incoming disagreement", reference)
 		}
 	}
 	return nil
