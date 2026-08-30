@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"example.privilege-escalation","name":"Privilege fixture","version":"1.0.0","kinds":["panel"],"entryPoints":{"panel":"Panel.qml"}}
