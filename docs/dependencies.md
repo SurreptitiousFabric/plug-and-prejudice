@@ -14,14 +14,13 @@ The two product binaries have three pinned non-standard-library module dependenc
 | Module | Version | Purpose | License | Integrity source |
 |---|---:|---|---|---|
 | `github.com/odvcencio/gotreesitter` | `v0.51.0` | Pure-Go, non-executing Python and JavaScript syntax trees with only those two grammar blobs embedded | MIT | Exact module and `go.mod` hashes in `go.sum`; upstream grammar lock records provenance |
-| `golang.org/x/sys` | `v0.47.0` | Official Linux system-call interfaces used by the inherited containment and trusted-executable boundary | BSD-3-Clause | Exact module and `go.mod` hashes in `go.sum` |
+| `golang.org/x/sys` | `v0.47.0` | Official Linux `openat2`, `statx`, and descriptor-relative filesystem APIs | BSD-3-Clause | Exact module and `go.mod` hashes in `go.sum` |
 | `mvdan.cc/sh/v3` | `v3.13.1` | Parse shell source into an AST without evaluating it | BSD-3-Clause | Exact module and `go.mod` hashes in `go.sum` |
 
 The scanner imports `mvdan.cc/sh/v3/syntax` and
 `mvdan.cc/sh/v3/fileutil`. It does not import the package's shell interpreter.
-The broker and its containment helpers import `x/sys/unix` for Linux
-descriptor-relative opening and related boundary operations. The scanner
-imports the pure-Go parser runtime. Production builds require the
+The broker imports `x/sys/unix`; the scanner imports it for mount-boundary
+traversal and imports the pure-Go parser runtime. Production builds require the
 `grammar_subset_python` and `grammar_subset_javascript` tags so the remaining
 grammar registry is not embedded. The required binary
 distribution notice is retained in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).

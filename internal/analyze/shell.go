@@ -53,11 +53,18 @@ func Sources(contents map[string][]byte) Result {
 			analyzeShell(name, data, &result)
 		} else if strings.EqualFold(filepath.Ext(name), ".qml") {
 			analyzeQML(name, data, &result)
+		} else if strings.EqualFold(filepath.Ext(name), ".desktop") {
+			analyzeDesktopEntry(name, data, &result)
+		} else if isSystemdUnitPath(name) {
+			analyzeSystemdUnit(name, data, &result)
+		} else if isHyprlandConfigPath(name) {
+			analyzeHyprlandConfig(name, data, &result)
 		} else if language := treeSitterLanguage(name, data); language != "" {
 			analyzeTreeSitter(name, data, language, &result)
 		}
 	}
 	expandLiteralCommandWrappers(&result)
+	correlateIndirectInvocations(contents, &result)
 	deriveCapabilities(&result)
 	annotateScopes(contents, nil, &result)
 	addLanguageCoverageLimitations(contents, &result)

