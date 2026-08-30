@@ -154,6 +154,22 @@ func Decode(data []byte, format string) (Report, error) {
 	return result, nil
 }
 
+// DecodeEvidenceInput copies one bounded caller-supplied byte sequence, hashes
+// that retained copy, and parses the same copy. The resulting document digest
+// identifies only the imported document bytes, never the target snapshot.
+func DecodeEvidenceInput(data []byte, format string) (Report, report.EvidenceInput, error) {
+	if len(data) > MaxInputBytes {
+		return Report{}, report.EvidenceInput{}, fmt.Errorf("Omarchy audit exceeds %d-byte input limit", MaxInputBytes)
+	}
+	retained := append([]byte(nil), data...)
+	audit, err := Decode(retained, format)
+	if err != nil {
+		return Report{}, report.EvidenceInput{}, err
+	}
+	input := report.NewOmarchyAuditEvidenceInput("input-omarchy-audit", "pinned Omarchy audit for "+audit.ID, retained)
+	return audit, input, nil
+}
+
 func rejectDuplicateMembers(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	var walk func(json.Token) error

@@ -1,13 +1,44 @@
 package omarchyaudit
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
 )
+
+func TestDecodeEvidenceInputHashesTheExactParsedBytes(t *testing.T) {
+	first, err := json.Marshal(validAudit())
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := append([]byte(nil), first...)
+	changed = append(changed[:len(changed)-1], []byte(" \n}")...)
+
+	for _, data := range [][]byte{first, changed} {
+		audit, input, err := DecodeEvidenceInput(data, FormatPR8439Revision732b104)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("%x", sha256.Sum256(data))
+		if audit.ID != "example.plugin" || input.DocumentSHA256 != want {
+			t.Fatalf("decoded input = %#v, digest %q want %q", audit, input.DocumentSHA256, want)
+		}
+		if input.SubjectRootDigest != "" || input.Format != report.OmarchyAuditInputFormat || input.Version != report.OmarchyAuditInputVersion {
+			t.Fatalf("current format claimed snapshot binding: %#v", input)
+		}
+	}
+	_, firstInput, _ := DecodeEvidenceInput(first, FormatPR8439Revision732b104)
+	_, changedInput, _ := DecodeEvidenceInput(changed, FormatPR8439Revision732b104)
+	if firstInput.DocumentSHA256 == changedInput.DocumentSHA256 {
+		t.Fatal("different parsed bytes produced the same document digest")
+	}
+}
 
 func validAudit() Report {
 	ok := true

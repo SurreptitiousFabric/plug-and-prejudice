@@ -19,3 +19,15 @@ func resourceComparisonSubject(kind, access, value string) string {
 	}
 	return string(result)
 }
+
+// OperationComparisonSubject returns the accepting contract's semantic subject
+// for a retained process-execution observation.
+func OperationComparisonSubject(command string) string {
+	return "command\x00" + command
+}
+
+// ResourceComparisonSubject returns the accepting contract's injective
+// semantic subject for exactly kind, access, and value.
+func ResourceComparisonSubject(kind, access, value string) string {
+	return resourceComparisonSubject(kind, access, value)
+}

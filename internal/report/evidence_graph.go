@@ -290,7 +290,7 @@ func (r Report) semanticSubject(kind NodeKind, id string) (string, bool) {
 	case NodeOperation:
 		for _, item := range r.Operations {
 			if item.ID == id {
-				return "command\x00" + filepath.Base(item.Command), true
+				return OperationComparisonSubject(filepath.Base(item.Command)), true
 			}
 		}
 	case NodeResource:

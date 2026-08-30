@@ -916,7 +916,7 @@ func semanticSubjectByReference(r Report, kind NodeKind, reference string) (stri
 	case NodeOperation:
 		for _, item := range r.Operations {
 			if item.Reference == reference {
-				return "command\x00" + path.Base(item.Command), true
+				return OperationComparisonSubject(path.Base(item.Command)), true
 			}
 		}
 	case NodeResource:
