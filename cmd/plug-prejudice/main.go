@@ -75,12 +75,15 @@ func run() int {
 	analysis := analyze.Sources(result.Contents)
 	analyze.Inventory(result.Files, result.Contents, &analysis)
 	comparisons := []report.Comparison{}
+	var omarchyAuditInput *report.EvidenceInput
 	if *omarchyAuditPath != "" {
-		comparisons, err = ingestOmarchyAuditFile(*omarchyAuditPath, *omarchyAuditFormat, analysis.Manifest, &analysis)
+		var input report.EvidenceInput
+		comparisons, input, err = ingestOmarchyAuditFile(*omarchyAuditPath, *omarchyAuditFormat, analysis.Manifest, &analysis, buildinfo.Version)
 		if err != nil {
 			writeScannerDiagnostic("ingest Omarchy audit", err)
 			return 1
 		}
+		omarchyAuditInput = &input
 	}
 	limitations := append(result.Limitations, analysis.Limitations...)
 	files, coverage := analyze.AssignCoverageDispositions(result.Files, result.Contents, limitations, result.Errors)
@@ -117,8 +120,8 @@ func run() int {
 		Limitations:    nonNil(limitations),
 		Errors:         nonNil(result.Errors),
 	}
-	if *omarchyAuditPath != "" {
-		r.EvidenceInputs = append(r.EvidenceInputs, report.EvidenceInput{ID: analyze.OmarchyAuditEvidenceInputID, Type: report.EvidenceInputOmarchyAudit, Label: "pinned Omarchy audit for " + analysis.Manifest.ID, Format: report.OmarchyAuditInputFormat, Version: report.OmarchyAuditInputVersion})
+	if omarchyAuditInput != nil {
+		r.EvidenceInputs = append(r.EvidenceInputs, *omarchyAuditInput)
 	}
 	if status == report.StatusIncomplete && len(r.Unknowns) == 0 && len(r.Limitations) == 0 && len(r.Errors) == 0 {
 		r.Limitations = append(r.Limitations, report.Limitation{Code: "analysis-coverage-incomplete", Description: "At least one retained artifact was only partially analyzed or could not be analyzed.", Scope: report.ScopeUnknown})
@@ -150,19 +153,19 @@ func writeVersion(output io.Writer) error {
 	}{ReviewerVersion: buildinfo.Version})
 }
 
-func ingestOmarchyAuditFile(path, format string, manifest *report.Manifest, analysis *analyze.Result) ([]report.Comparison, error) {
+func ingestOmarchyAuditFile(path, format string, manifest *report.Manifest, analysis *analyze.Result, scannerVersion string) ([]report.Comparison, report.EvidenceInput, error) {
 	data, err := omarchyaudit.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read: %w", err)
+		return nil, report.EvidenceInput{}, fmt.Errorf("read: %w", err)
 	}
-	audit, err := omarchyaudit.Decode(data, format)
+	audit, input, err := omarchyaudit.DecodeEvidenceInput(data, format)
 	if err != nil {
-		return nil, fmt.Errorf("validate: %w", err)
+		return nil, report.EvidenceInput{}, fmt.Errorf("validate: %w", err)
 	}
 	if manifest == nil || manifest.ID == "" || audit.ID != manifest.ID {
-		return nil, fmt.Errorf("audit plugin ID %q does not match parsed manifest ID", audit.ID)
+		return nil, report.EvidenceInput{}, fmt.Errorf("audit plugin ID %q does not match parsed manifest ID", audit.ID)
 	}
-	return analyze.IngestOmarchyAudit(audit, analysis), nil
+	return analyze.IngestOmarchyAudit(audit, analysis, scannerVersion), input, nil
 }
 
 func writeScannerDiagnostic(context string, err error) {

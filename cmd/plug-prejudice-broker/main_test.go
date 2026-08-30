@@ -218,6 +218,11 @@ func TestEncodeBrokerReportRejectsOversizeWithoutOutput(t *testing.T) {
 	if err == nil || over != nil {
 		t.Fatalf("invalid report produced bytes: %d, %v", len(over), err)
 	}
+	value.SchemaVersion = "1.0.0"
+	legacy, err := encodeBrokerReport(value)
+	if err == nil || legacy != nil {
+		t.Fatalf("legacy report produced bytes: %d, %v", len(legacy), err)
+	}
 }
 
 func TestDuplicateScannerMemberIsNotForwarded(t *testing.T) {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -53,10 +55,11 @@ func TestIngestOmarchyAuditFileRequiresMatchingManifestIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	analysis := analyze.Result{}
-	if _, err := ingestOmarchyAuditFile(path, omarchyaudit.FormatPR8439Revision732b104, &report.Manifest{ID: "different.plugin"}, &analysis); err == nil || !strings.Contains(err.Error(), "does not match") {
+	if _, _, err := ingestOmarchyAuditFile(path, omarchyaudit.FormatPR8439Revision732b104, &report.Manifest{ID: "different.plugin"}, &analysis, buildinfo.Version); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("identity mismatch error = %v", err)
 	}
-	if comparisons, err := ingestOmarchyAuditFile(path, omarchyaudit.FormatPR8439Revision732b104, &report.Manifest{ID: "example.plugin"}, &analysis); err != nil || comparisons == nil {
+	wantDigest := sha256.Sum256(data)
+	if comparisons, input, err := ingestOmarchyAuditFile(path, omarchyaudit.FormatPR8439Revision732b104, &report.Manifest{ID: "example.plugin"}, &analysis, buildinfo.Version); err != nil || comparisons == nil || input.DocumentSHA256 != hex.EncodeToString(wantDigest[:]) || input.SubjectRootDigest != "" {
 		t.Fatalf("matching audit = %#v, %v", comparisons, err)
 	}
 }
@@ -72,7 +75,7 @@ func TestImportedAuditComparisonsProduceValidReportGraph(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	comparisons, err := ingestOmarchyAuditFile(path, omarchyaudit.FormatPR8439Revision732b104, analysis.Manifest, &analysis)
+	comparisons, input, err := ingestOmarchyAuditFile(path, omarchyaudit.FormatPR8439Revision732b104, analysis.Manifest, &analysis, buildinfo.Version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +87,7 @@ func TestImportedAuditComparisonsProduceValidReportGraph(t *testing.T) {
 	r.Target.FileCount = 2
 	r.Target.ReadBytes = r.Inventory[0].Size + r.Inventory[1].Size
 	refreshCommandRootDigest(&r)
-	r.EvidenceInputs = append(r.EvidenceInputs, analyze.OmarchyAuditEvidenceInput(audit))
+	r.EvidenceInputs = append(r.EvidenceInputs, input)
 	r.Target.Manifest = analysis.Manifest
 	r.Operations = nonNil(analysis.Operations)
 	r.Resources = nonNil(analysis.Resources)
@@ -149,6 +152,72 @@ func TestScannerProducerEmitsIndependentlyDecodableSchemaTwoReport(t *testing.T)
 	}
 	if decoded.SchemaVersion != report.SchemaVersion || decoded.Review == nil || decoded.Relationships == nil || decoded.Unknowns == nil {
 		t.Fatalf("producer omitted schema-2 contract sections: %#v", decoded)
+	}
+}
+
+func TestScannerOmarchyInputRemainsExplicitlyUnboundEndToEnd(t *testing.T) {
+	target := t.TempDir()
+	manifest := []byte(`{"schemaVersion":1,"id":"example.plugin","name":"Example","version":"1.0.0","kinds":["panel"],"entryPoints":{"panel":"Panel.qml"}}`)
+	if err := os.WriteFile(filepath.Join(target, "manifest.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "plugin.sh"), []byte("#!/bin/sh\ncurl https://same.example.test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	audit := omarchyaudit.Report{ID: "example.plugin", Declared: omarchyaudit.Declared{Commands: []string{}, Network: []string{}, Reads: []string{}, Writes: []string{}}, Observed: omarchyaudit.Observed{Commands: []omarchyaudit.Command{{Name: "curl"}}, Network: []omarchyaudit.Host{{Host: "same.example.test"}}, Reads: []omarchyaudit.Path{}, Writes: []omarchyaudit.Path{}}, Risks: []omarchyaudit.Risk{}, Summary: omarchyaudit.Summary{UndeclaredCommands: 1, UndeclaredNetwork: 1}, Verdict: omarchyaudit.Verdict{Level: "moderate", Reasons: []string{}}}
+	auditBytes, err := json.Marshal(audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditPath := filepath.Join(t.TempDir(), "audit.json")
+	if err := os.WriteFile(auditPath, auditBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalArgs, originalStdout := os.Args, os.Stdout
+	os.Args, os.Stdout = []string{"plug-prejudice", "--target", target, "--omarchy-audit", auditPath, "--omarchy-audit-format", omarchyaudit.FormatPR8439Revision732b104}, writeEnd
+	t.Cleanup(func() { os.Args, os.Stdout = originalArgs, originalStdout })
+	done := make(chan []byte, 1)
+	go func() { data, _ := io.ReadAll(readEnd); done <- data }()
+	status := run()
+	_ = writeEnd.Close()
+	output := <-done
+	_ = readEnd.Close()
+	if status != 0 {
+		t.Fatalf("scanner status = %d", status)
+	}
+	decoded, err := report.Decode(output)
+	if err != nil {
+		t.Fatalf("decode scanner output: %v\n%s", err, output)
+	}
+	if decoded.Status != report.StatusIncomplete {
+		t.Fatalf("status = %q", decoded.Status)
+	}
+	foundInput, foundBindingUnknown := false, false
+	wantDigest := sha256.Sum256(auditBytes)
+	for _, input := range decoded.EvidenceInputs {
+		if input.ID == analyze.OmarchyAuditEvidenceInputID {
+			foundInput = input.DocumentSHA256 == hex.EncodeToString(wantDigest[:]) && input.SubjectRootDigest == ""
+		}
+	}
+	for _, unknown := range decoded.Unknowns {
+		if unknown.Reason == report.UnknownExternalBinding && unknown.Provenance.Analyzer == report.DeterministicAnalyzer && unknown.Provenance.EvidenceSource == report.EvidenceSourceOmarchyAudit {
+			foundBindingUnknown = true
+		}
+	}
+	if !foundInput || !foundBindingUnknown {
+		t.Fatalf("external boundary missing: input=%v unknown=%v", foundInput, foundBindingUnknown)
+	}
+	reencoded, err := report.EncodeCanonical(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(output, reencoded) {
+		t.Fatal("scanner output differs from canonical decode/re-encode")
 	}
 }
 
@@ -233,7 +302,7 @@ func refreshCommandRootDigest(r *report.Report) {
 	r.Target.RootDigest = digest
 	for index := range r.EvidenceInputs {
 		if r.EvidenceInputs[index].ID == report.TargetEvidenceInputID {
-			r.EvidenceInputs[index].Digest = digest
+			r.EvidenceInputs[index].SubjectRootDigest = digest
 		}
 	}
 }
