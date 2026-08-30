@@ -29,6 +29,11 @@ not a stable API. Schema-2 public `PP-` references are stable for the same node
 kind and deterministic internal ID; their derivation and typed relationship
 meaning are part of this contract.
 
+Canonical ordering of evidence, limitations, and scan errors compares their
+typed fields individually rather than joining hostile strings with a delimiter.
+It is deterministic for all schema-valid Unicode text, including embedded
+U+0000. Evidence line positions are compared numerically.
+
 ## Compatibility process
 
 Any schema change must:

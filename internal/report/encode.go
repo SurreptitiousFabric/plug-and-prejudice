@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"sort"
-	"strconv"
 )
 
 var ErrEncodedReportTooLarge = errors.New("canonical encoded report exceeds 16 MiB limit")
@@ -78,9 +77,9 @@ func canonicalReport(value Report) (Report, error) {
 		return relationshipTuple(value.Relationships[i]) < relationshipTuple(value.Relationships[j])
 	})
 	sort.Slice(value.Limitations, func(i, j int) bool {
-		return limitationTuple(value.Limitations[i]) < limitationTuple(value.Limitations[j])
+		return compareLimitation(value.Limitations[i], value.Limitations[j]) < 0
 	})
-	sort.Slice(value.Errors, func(i, j int) bool { return errorTuple(value.Errors[i]) < errorTuple(value.Errors[j]) })
+	sort.Slice(value.Errors, func(i, j int) bool { return compareScanError(value.Errors[i], value.Errors[j]) < 0 })
 	for index := range value.Inventory {
 		if value.Inventory[index].Binary != nil {
 			binary := *value.Inventory[index].Binary
@@ -154,15 +153,70 @@ func cloneStringMap(values map[string]string) map[string]string {
 }
 
 func sortEvidence(values []Evidence) {
-	sort.Slice(values, func(i, j int) bool { return evidenceTuple(values[i]) < evidenceTuple(values[j]) })
+	sort.Slice(values, func(i, j int) bool { return compareEvidence(values[i], values[j]) < 0 })
 }
-func evidenceTuple(v Evidence) string {
-	return v.InputID + "\x00" + v.Path + "\x00" + strconv.Itoa(v.LineStart) + "\x00" + strconv.Itoa(v.LineEnd) + "\x00" + v.Operation + "\x00" + v.Excerpt
+
+func compareString(left, right string) int {
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
+}
+
+func compareInt(left, right int) int {
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
+}
+
+func compareEvidence(left, right Evidence) int {
+	if result := compareString(left.InputID, right.InputID); result != 0 {
+		return result
+	}
+	if result := compareString(left.Path, right.Path); result != 0 {
+		return result
+	}
+	if result := compareInt(left.LineStart, right.LineStart); result != 0 {
+		return result
+	}
+	if result := compareInt(left.LineEnd, right.LineEnd); result != 0 {
+		return result
+	}
+	if result := compareString(left.Operation, right.Operation); result != 0 {
+		return result
+	}
+	return compareString(left.Excerpt, right.Excerpt)
 }
 func relationshipTuple(v Relationship) string {
 	return string(v.Type) + "\x00" + string(v.FromKind) + "\x00" + v.From + "\x00" + string(v.ToKind) + "\x00" + v.To
 }
-func limitationTuple(v Limitation) string {
-	return v.Code + "\x00" + v.Path + "\x00" + string(v.Scope) + "\x00" + v.Description
+
+func compareLimitation(left, right Limitation) int {
+	if result := compareString(left.Code, right.Code); result != 0 {
+		return result
+	}
+	if result := compareString(left.Path, right.Path); result != 0 {
+		return result
+	}
+	if result := compareString(string(left.Scope), string(right.Scope)); result != 0 {
+		return result
+	}
+	return compareString(left.Description, right.Description)
 }
-func errorTuple(v ScanError) string { return v.Code + "\x00" + v.Path + "\x00" + v.Message }
+
+func compareScanError(left, right ScanError) int {
+	if result := compareString(left.Code, right.Code); result != 0 {
+		return result
+	}
+	if result := compareString(left.Path, right.Path); result != 0 {
+		return result
+	}
+	return compareString(left.Message, right.Message)
+}

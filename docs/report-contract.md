@@ -86,15 +86,20 @@ recommended design is recorded in [ADR 0005](decisions/0005-analysis-production-
 Canonical encoding operates on a copy. It sorts the non-semantic collections:
 evidence inputs by ID; inventory by path; operation, resource, finding, and
 unknown nodes by full internal identity; relationships by complete typed tuple;
-limitations and errors by documented tuples; manifest kinds and ELF library,
+limitations and errors by typed field order; manifest kinds and ELF library,
 symbol, extracted-string, URL, and capability sets lexically; finding/unknown
-evidence by evidence tuple; finding related IDs, unknown affected-operation
+evidence by typed field order; finding related IDs, unknown affected-operation
 IDs, and suppressed-rule IDs lexically; and review reasons by deterministic
 priority and stable reference/title. JSON map keys use the standard lexical
 ordering of Go's JSON encoder. Operation arguments retain call position,
 unknown origins retain data-flow trace order, and archive entries retain
 package order; changing those semantic sequences changes canonical bytes. Scan
 start/completion timestamps are observations and therefore intentionally vary.
+Evidence compares input ID, path, numeric line start/end, operation, and
+excerpt. Limitations compare code, path, scope, and description. Scan errors
+compare code, path, and message. Each comparator compares typed fields
+individually, so schema-valid hostile text—including embedded U+0000—cannot
+make distinct records compare equal through delimiter ambiguity.
 Deterministic ordering supports report comparison and audit but does not turn a
 scan into a reproducible or atomic filesystem snapshot.
 
