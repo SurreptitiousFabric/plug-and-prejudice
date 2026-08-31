@@ -4,20 +4,24 @@ Status: implemented foundation; resource-scope changes pending human review.
 
 ## Boundary
 
-The trusted broker enters and verifies resource containment before either
-listing plugin-controlled directory names or resolving a selected plugin. List
-mode reads directory entries in batches and rejects the entire operation after
-1,024 entries or on any unacceptable entry; it never reads plugin file content.
+The broker enters and verifies the resource scope before enumerating any
+plugin-controlled directory name. List mode reads fixed-size batches, retains a
+bounded set, and rejects overflow or any unacceptable entry without reading
+plugin file content.
 
-The broker opens the trusted configured plugin-root path with Linux `openat2`,
-rejecting symlinks and magic links while allowing ordinary host mount crossings
-needed to reach that configured root. It opens the selected plugin beneath the
-already-pinned root with `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`,
-`RESOLVE_NO_MAGICLINKS`, and `RESOLVE_NO_XDEV`. That rejects a mount crossing
-during selected-target resolution; it does not prove that every nested path in
-the live target tree stays on one mount. Deeper nested-mount handling belongs
-to the later selected-tree/artifact boundary. Bubblewrap receives the exact
-selected-directory descriptor. Target-controlled text never enters an option.
+The broker opens the trusted configured plugin root without symlink or
+magic-link traversal while allowing ordinary host mount crossings needed to
+reach trusted configuration. It selects the direct child beneath that pinned
+descriptor with no-symlink/no-magic-link/no-cross-mount resolution and passes
+the same opened target to Bubblewrap. PR #22 establishes this selection
+boundary. The later selected-tree implementation additionally establishes the
+target mount ID and applies descriptor-relative no-cross-mount resolution to
+each child open; nested mount entries remain metadata-only with an explicit
+limitation.
+Regular files with more than one hard link are inventoried but not opened,
+because another name for the same inode may be outside the selected plugin.
+This omission is an explicit limitation and makes the report incomplete.
+Target-controlled text never enters a Bubblewrap option.
 
 Before target resolution, the broker re-enters its pinned running inode in a
 randomized transient systemd user scope. It verifies its own cgroup-v2 files and
@@ -26,12 +30,13 @@ and 100% aggregate CPU or stricter. It also disables core dumps and restricts
 open file descriptors to at most 256. See
 [decision 0003](decisions/0003-systemd-resource-scope.md).
 
-The production broker accepts only a root-owned, non-group/world-writable
-scanner inode opened without symlink traversal. It also verifies that this exact
-pinned descriptor is an executable ELF with no program interpreter or imported
-shared libraries. Release builds therefore use `CGO_ENABLED=0`. Tests may opt
-into an explicitly named development mode for a user-owned temporary scanner;
-the broker has no flag or production path that enables that weaker mode.
+The production broker requires the pinned scanner to be a root-owned,
+non-group/world-writable executable ELF with no
+program interpreter or imported shared libraries. Release builds therefore use
+`CGO_ENABLED=0`. This preserves the deliberately empty runtime filesystem and
+turns an incorrectly linked package into a clear fail-closed error. Tests may
+explicitly allow a user-owned development scanner; no broker flag enables that
+weaker mode.
 
 The sandbox is built from an empty mount namespace. It contains only:
 
@@ -71,6 +76,13 @@ PWD=/target
 TMPDIR=/tmp
 ```
 
+When optional Omarchy audit evidence is explicitly supplied, the broker pins a
+single non-symlink regular-file descriptor and adds one read-only bind at
+`/audit/omarchy.json`. No containing directory or upstream `pluginDir` path is
+mounted. The scanner receives the pinned format identifier as a fixed argument;
+target content cannot select it. Omitting the evidence flags leaves this mount
+absent.
+
 The outer broker also does not pass its user-session environment to
 `systemd-run` or `systemctl`. It validates the euid-owned, non-group/world
 accessible `/run/user/<euid>` directory and supplies only that
@@ -89,11 +101,26 @@ cgroup has been collected, all within a three-second teardown deadline. A
 collected unit or an inactive/failed unit with no control-group path is accepted
 as already empty; acceptance of `systemctl kill --no-block` is not sufficient.
 The broker imposes a 16 MiB report limit and a
-64 KiB diagnostic limit. Scanner-level limits currently include 10,000 entries,
+64 KiB diagnostic limit. Crossing either stream bound cancels the child as soon
+as that copy observes overflow; cancellation does not wait for the other stream
+to close. Before a failed scanner diagnostic reaches broker stderr, C0/C1
+terminal controls and the complete Unicode `Bidi_Control` set are replaced
+while newline and tab remain readable; malformed UTF-8 is replaced
+byte-for-byte so sanitized output cannot exceed the input bound. All
+broker-generated errors and standalone-scanner diagnostics then cross the same
+plain-text normalizer with a 4 KiB ceiling before stderr reaches either a
+terminal or the Omarchy process collector. Raw flag-parser errors are also
+suppressed in favor of this path. The broker bound covers strict-decoder errors
+that can quote hostile JSON field names; UI-side truncation is not treated as a
+process-memory control. Scanner-level limits currently include 10,000 entries,
 32 directory levels, 2 MiB per source file, 32 MiB total retained source, 64 MiB
 per ELF file, and 128 MiB total ELF input. Source and binary budgets are
-independent. Enforced limits are included in scan metadata and must match the
-broker's compiled policy.
+independent. Directory enumeration itself is incremental and retains at most
+the remaining file-count budget plus one overflow sentinel. If a directory
+exceeds that remaining budget, the scanner omits that directory as a unit and
+adds a `max-files` limitation instead of materializing the full listing or
+choosing a filesystem-order-dependent subset. Enforced limits are included in
+scan metadata and must match the broker's compiled policy.
 
 The end-to-end broker-operation policy deadline is 42 seconds: 35 seconds for
 the systemd-scoped command, up to 2 seconds for its process/pipe reaping, up to
@@ -130,7 +157,6 @@ aborts the complete scan and returns no ordinary evidence. This establishes a
 stable observed tree across two bounded passes, not an atomic filesystem
 snapshot. A change-and-revert wholly between observations remains a documented
 residual race.
-
 The test is run both normally and with Go's race detector. Additional tests
 verify the live systemd scope from inside its cgroup, reject missing, unlimited,
 or weaker cgroup/runtime controls, trigger real memory and task exhaustion,
@@ -138,7 +164,10 @@ terminate a surviving descendant at scope teardown, bound a descendant holding
 output descriptors, reject simultaneous and asymmetric stdout/stderr
 exhaustion (including a retained opposite pipe), exclude hostile inherited
 environment overrides from live systemd operations, deny cgroup
-migration and a nested user namespace, and prove host session sockets are absent.
+migration and a nested user namespace, and prove host session sockets are
+absent. A separate diagnostic-overflow probe writes beyond the stderr bound and
+then sleeps; the test proves the broker cancels promptly rather than waiting
+for stdout or the wall deadline.
 
 ## Non-claims
 

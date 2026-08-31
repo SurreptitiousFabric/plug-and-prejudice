@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/safetext"
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/trustedexec"
 	"golang.org/x/sys/unix"
 )
@@ -21,7 +22,7 @@ import (
 const bubblewrapPath = "/usr/bin/bwrap"
 
 const (
-	MaxReportBytes = 16 << 20
+	MaxReportBytes = policy.MaxReportBytes
 	MaxStderrBytes = 64 << 10
 )
 
@@ -64,6 +65,10 @@ func DefaultRunner() (Runner, error) {
 }
 
 func (r Runner) Run(ctx context.Context, scannerPath string, target *os.File, displayName string) ([]byte, error) {
+	return r.RunWithAudit(ctx, scannerPath, target, displayName, "", "")
+}
+
+func (r Runner) RunWithAudit(ctx context.Context, scannerPath string, target *os.File, displayName, auditPath, auditFormat string) ([]byte, error) {
 	if r.Bubblewrap == "" {
 		return nil, errors.New("bubblewrap path is empty")
 	}
@@ -73,9 +78,18 @@ func (r Runner) Run(ctx context.Context, scannerPath string, target *os.File, di
 	if !validDisplayName(displayName) {
 		return nil, errors.New("sandbox display name is invalid")
 	}
+	if target == nil {
+		return nil, errors.New("pinned target descriptor is required")
+	}
+	if (auditPath == "") != (auditFormat == "") {
+		return nil, errors.New("audit path and pinned format must be supplied together")
+	}
+	targetInfo, err := target.Stat()
+	if err != nil || !targetInfo.IsDir() {
+		return nil, errors.New("pinned target descriptor is not a directory")
+	}
 	var scanner *os.File
 	var trustedScanner *trustedexec.Executable
-	var err error
 	if r.AllowDevelopmentScanner {
 		scanner, err = openPinned(scannerPath, false)
 	} else {
@@ -92,31 +106,38 @@ func (r Runner) Run(ctx context.Context, scannerPath string, target *os.File, di
 	} else {
 		defer scanner.Close()
 	}
+	var audit *os.File
+	if auditPath != "" {
+		audit, err = openPinned(auditPath, false)
+		if err != nil {
+			return nil, fmt.Errorf("pin Omarchy audit: %w", err)
+		}
+		defer audit.Close()
+	}
 	if err := requireStaticELF(scanner); err != nil {
 		return nil, fmt.Errorf("validate scanner executable: %w", err)
 	}
-	if target == nil {
-		return nil, errors.New("pinned target descriptor is required")
-	}
-	targetInfo, err := target.Stat()
-	if err != nil || !targetInfo.IsDir() {
-		return nil, errors.New("pinned target descriptor is not a directory")
-	}
-
 	timed, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
+	arguments := Arguments("/proc/self/fd/3", "/proc/self/fd/4", displayName)
+	if audit != nil {
+		arguments = ArgumentsWithAudit("/proc/self/fd/3", "/proc/self/fd/4", displayName, "/proc/self/fd/5", auditFormat)
+	}
 	bwrap, err := trustedexec.Open(r.Bubblewrap)
 	if err != nil {
 		return nil, fmt.Errorf("pin bubblewrap: %w", err)
 	}
 	defer bwrap.Close()
-	procPath, args, err := bwrap.CommandPath(Arguments("/proc/self/fd/3", "/proc/self/fd/4", displayName)...)
+	procPath, args, err := bwrap.CommandPath(arguments...)
 	if err != nil {
 		return nil, err
 	}
 	cmd := exec.CommandContext(timed, procPath, args...)
 	cmd.WaitDelay = policy.ProcessWaitDelay
 	cmd.ExtraFiles = []*os.File{scanner, target}
+	if audit != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, audit)
+	}
 	cmd.Env = []string{}
 	out := &boundedBuffer{limit: MaxReportBytes, cancel: cancel}
 	diagnostics := &boundedBuffer{limit: MaxStderrBytes, cancel: cancel}
@@ -130,10 +151,10 @@ func (r Runner) Run(ctx context.Context, scannerPath string, target *os.File, di
 		return nil, fmt.Errorf("read scanner diagnostics: %w", diagnostics.err)
 	}
 	if errors.Is(timed.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("sandbox timed out after %s: %s", r.Timeout, safeDiagnostic(diagnostics.buffer.Bytes()))
+		return nil, fmt.Errorf("sandbox timed out after %s: %s", r.Timeout, safetext.Diagnostic(diagnostics.buffer.Bytes(), MaxStderrBytes))
 	}
 	if waitErr != nil {
-		return nil, fmt.Errorf("sandboxed scanner failed: %w: %s", waitErr, safeDiagnostic(diagnostics.buffer.Bytes()))
+		return nil, fmt.Errorf("sandboxed scanner failed: %w: %s", waitErr, safetext.Diagnostic(diagnostics.buffer.Bytes(), MaxStderrBytes))
 	}
 	return out.buffer.Bytes(), nil
 }
@@ -185,6 +206,22 @@ func Arguments(scannerSource, targetSource, displayName string) []string {
 	}
 }
 
+func ArgumentsWithAudit(scannerSource, targetSource, displayName, auditSource, auditFormat string) []string {
+	arguments := Arguments(scannerSource, targetSource, displayName)
+	separator := 0
+	for index, argument := range arguments {
+		if argument == "--" {
+			separator = index
+			break
+		}
+	}
+	prefix := append([]string(nil), arguments[:separator]...)
+	prefix = append(prefix, "--dir", "/audit", "--ro-bind", auditSource, "/audit/omarchy.json")
+	command := append([]string(nil), arguments[separator:]...)
+	command = append(command, "--omarchy-audit", "/audit/omarchy.json", "--omarchy-audit-format", auditFormat)
+	return append(prefix, command...)
+}
+
 func validDisplayName(value string) bool {
 	if value == "" || len(value) > 255 {
 		return false
@@ -229,15 +266,4 @@ func openPinned(name string, wantDirectory bool) (*os.File, error) {
 		return nil, errors.New("opened descriptor has unexpected type or identity")
 	}
 	return f, nil
-}
-
-func safeDiagnostic(data []byte) string {
-	const replacement = '?'
-	runes := []rune(string(data))
-	for i, value := range runes {
-		if value < 0x20 && value != '\n' && value != '\t' {
-			runes[i] = replacement
-		}
-	}
-	return string(runes)
 }

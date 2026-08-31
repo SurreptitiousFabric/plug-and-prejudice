@@ -18,6 +18,17 @@ func TestRequireAcceptsRootOwnedSystemExecutable(t *testing.T) {
 	defer executable.Close()
 }
 
+func TestValidateModeRequiresExecutableNonWritableRegularFile(t *testing.T) {
+	if err := validateMode(0o755); err != nil {
+		t.Fatalf("safe executable mode was rejected: %v", err)
+	}
+	for _, mode := range []os.FileMode{0o644, 0o775, 0o757, os.ModeDir | 0o755} {
+		if err := validateMode(mode); err == nil {
+			t.Errorf("unsafe mode %v was accepted", mode)
+		}
+	}
+}
+
 func TestRequireRejectsRelativeSymlinkAndUserFile(t *testing.T) {
 	if _, err := Open("usr/bin/true"); err == nil {
 		t.Fatal("relative executable was accepted")

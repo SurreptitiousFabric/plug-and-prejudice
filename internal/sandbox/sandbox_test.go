@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/safetext"
 )
 
 func TestArgumentsKeepNetworkAndHostFilesystemUnshared(t *testing.T) {
@@ -36,6 +37,26 @@ func TestArgumentsKeepNetworkAndHostFilesystemUnshared(t *testing.T) {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("sandbox arguments contain forbidden %q: %s", forbidden, joined)
 		}
+	}
+}
+
+func TestAuditArgumentsExposeOnlyPinnedReadOnlyEvidenceFile(t *testing.T) {
+	args := ArgumentsWithAudit("/proc/self/fd/3", "/proc/self/fd/4", "org.example.plugin", "/proc/self/fd/5", "pr8439-732b104")
+	joined := strings.Join(args, " ")
+	for _, required := range []string{"--dir /audit", "--ro-bind /proc/self/fd/5 /audit/omarchy.json", "--omarchy-audit /audit/omarchy.json", "--omarchy-audit-format pr8439-732b104"} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("audit sandbox arguments omit %q: %s", required, joined)
+		}
+	}
+	separator := 0
+	for index, value := range args {
+		if value == "--" {
+			separator = index
+			break
+		}
+	}
+	if separator == 0 || strings.Join(args[:separator], " ") == "" || !strings.Contains(strings.Join(args[:separator], " "), "/proc/self/fd/5") {
+		t.Fatalf("audit bind is not a Bubblewrap option: %#v", args)
 	}
 }
 
@@ -264,6 +285,31 @@ func TestBubblewrapBoundsSimultaneousStdoutAndStderrExhaustion(t *testing.T) {
 	}
 }
 
+func TestBubblewrapMountsOnlyPinnedAuditFileReadOnly(t *testing.T) {
+	bwrap, probe := trustedProbe(t)
+	target := probeTarget(t)
+	auditDirectory := t.TempDir()
+	auditPath := filepath.Join(auditDirectory, "audit.json")
+	if err := os.WriteFile(auditPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(auditDirectory, "sibling"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := Runner{Bubblewrap: bwrap, Timeout: 5 * time.Second, AllowDevelopmentScanner: true}
+	output, err := runner.RunWithAudit(context.Background(), probe, target, "audit-probe", auditPath, "pr8439-732b104")
+	if err != nil {
+		t.Fatalf("run audit sandbox probe: %v", err)
+	}
+	var result map[string]bool
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result["readAudit"] || result["writeAudit"] || result["readAuditSibling"] {
+		t.Fatalf("audit mount boundary = %#v", result)
+	}
+}
+
 func TestBubblewrapBoundsAsymmetricOutputExhaustionWithRetainedPipe(t *testing.T) {
 	for _, mode := range []string{"stdout-overflow-stderr-held", "stderr-overflow-stdout-held"} {
 		t.Run(mode, func(t *testing.T) {
@@ -302,6 +348,31 @@ func TestBubblewrapRejectsOversizedOutput(t *testing.T) {
 	}
 }
 
+func TestBubblewrapCancelsImmediatelyOnOversizedDiagnostics(t *testing.T) {
+	bwrap, probe := trustedProbe(t)
+	target := probeTarget(t)
+	runner := Runner{Bubblewrap: bwrap, Timeout: 5 * time.Second, AllowDevelopmentScanner: true}
+	started := time.Now()
+	_, err := runner.Run(context.Background(), probe, target, "diagnostic-output")
+	if err == nil || !strings.Contains(err.Error(), "diagnostics") || !strings.Contains(err.Error(), "output exceeded") {
+		t.Fatalf("oversized diagnostics result = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 4*time.Second {
+		t.Fatalf("oversized diagnostics took %s; cancellation was not prompt", elapsed)
+	}
+}
+
+func TestSafeDiagnosticNeutralizesTerminalAndBidiControls(t *testing.T) {
+	input := append([]byte("before\x1b[31m\u009b\u061c\u200e\u200f\u202eafter\u2066\n\tkept"), 0xff, 0xfe)
+	got := safetext.Diagnostic(input, MaxStderrBytes)
+	if got != "before?[31m?????after?\n\tkept??" {
+		t.Fatalf("safeDiagnostic() = %q", got)
+	}
+	if len(got) > len(input) {
+		t.Fatalf("safe diagnostic grew from %d to %d bytes", len(input), len(got))
+	}
+}
+
 func trustedProbe(t *testing.T) (string, string) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
@@ -318,7 +389,31 @@ func trustedProbe(t *testing.T) (string, string) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build trusted sandbox probe: %v: %s", err, output)
 	}
+	requireBubblewrapNetworkNamespace(t, bwrap, probe)
 	return bwrap, probe
+}
+
+func requireBubblewrapNetworkNamespace(t *testing.T, bwrap, probe string) {
+	t.Helper()
+	check := exec.Command(
+		bwrap,
+		"--die-with-parent",
+		"--unshare-user",
+		"--unshare-net",
+		"--dir", "/app",
+		"--ro-bind", probe, "/app/probe",
+		"--",
+		"/app/probe",
+	)
+	output, err := check.CombinedOutput()
+	if err == nil {
+		return
+	}
+	message := string(output)
+	if strings.Contains(message, "loopback: Failed RTM_NEWADDR: Operation not permitted") {
+		t.Skipf("host kernel cannot configure Bubblewrap's isolated loopback interface: %s", strings.TrimSpace(message))
+	}
+	t.Fatalf("Bubblewrap network-namespace preflight failed: %v: %s", err, strings.TrimSpace(message))
 }
 
 func probeTarget(t *testing.T) *os.File {

@@ -325,6 +325,19 @@ func TestLiveSystemdScopeEnforcesVerifiableControls(t *testing.T) {
 	}
 }
 
+func TestVerifyRuntimeMaxRejectsMissingUnlimitedAndWeakValues(t *testing.T) {
+	for _, value := range []string{"35s", "30s", "1us"} {
+		if err := verifyRuntimeMax(value); err != nil {
+			t.Errorf("%q rejected: %v", value, err)
+		}
+	}
+	for _, value := range []string{"", "infinity", "0", "36s", "not-duration"} {
+		if err := verifyRuntimeMax(value); err == nil {
+			t.Errorf("%q accepted", value)
+		}
+	}
+}
+
 func TestLiveSystemdScopeEnforcesMemoryMax(t *testing.T) {
 	if helperArgument("resource-helper") == "memory" {
 		allocation := make([]byte, 320<<20)

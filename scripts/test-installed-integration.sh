@@ -4,7 +4,7 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 
-for command in go quickshell timeout; do
+for command in quickshell timeout /usr/bin/plug-prejudice /usr/bin/plug-prejudice-broker; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "test-installed-integration: missing command: $command" >&2
     exit 1
@@ -24,9 +24,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$work/bin"
-CGO_ENABLED=0 go build -trimpath -o "$work/bin/plug-prejudice" ./cmd/plug-prejudice
-CGO_ENABLED=0 go build -trimpath -o "$work/bin/plug-prejudice-broker" ./cmd/plug-prejudice-broker
 cp Panel.qml "$work/Panel.qml"
 cp tests/PanelIntegrationTest.qml "$work/shell.qml"
 ln -s "$omarchy_qml_root/Commons" "$work/Commons"

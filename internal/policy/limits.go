@@ -13,6 +13,7 @@ const (
 	ProcessWaitDelay             = 2 * time.Second
 	TeardownTimeout              = 3 * time.Second
 	TeardownCommandTimeout       = 1 * time.Second
+	MaxReportBytes               = 16 << 20
 	OperationTimeout             = ScopeRuntime + ProcessWaitDelay + TeardownTimeout + ProcessWaitDelay
 )
 

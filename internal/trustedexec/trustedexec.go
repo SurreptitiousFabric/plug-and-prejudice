@@ -96,3 +96,16 @@ func (e *Executable) CommandPath(arguments ...string) (string, []string, error) 
 	procPath := "/proc/self/fd/" + strconv.FormatUint(uint64(e.file.Fd()), 10)
 	return procPath, arguments, nil
 }
+
+func validateMode(mode os.FileMode) error {
+	if !mode.IsRegular() {
+		return errors.New("trusted executable must be a regular file")
+	}
+	if mode.Perm()&0o111 == 0 {
+		return errors.New("trusted executable is not executable")
+	}
+	if mode.Perm()&0o022 != 0 {
+		return errors.New("trusted executable is writable by group or others")
+	}
+	return nil
+}
