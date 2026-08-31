@@ -63,18 +63,38 @@ ShellRoot {
       Qt.exit(1)
       return
     }
-    panel.view = "report"
-    panel.currentReport = {"target": {"manifest": {
-      "description": "Useful helper\nFAKE CRITICAL ROW <img src='https://example.invalid/a'>\u202e",
-      "kinds": ["panel\rFAKE TAB", "service\tFAKE"]
-    }}, "review": {
-      "securityImpact": {"level": "high", "reasons": [{"reference": "PP-1234567890ABCDEF", "title": "impact\nFAKE\u202e", "scope": "runtime"}]},
-      "evidenceConfidence": {"level": "medium", "high": 2, "medium": 1, "low": 0, "reasons": [{"reference": "PP-1234567890ABCDEF", "title": "impact", "scope": "runtime"}]},
+    var findingReference = "PP-1234567890ABCDEF1234567890ABCDEF"
+    var unknownReference = "PP-FEDCBA0987654321FEDCBA0987654321"
+    panel.acceptReport(JSON.stringify({
+      "schemaVersion": "2.0.0",
+      "status": "incomplete",
+      "scan": {"sandboxed": true},
+      "target": {"displayName": "hostile fixture", "manifest": {
+        "description": "Useful helper\nFAKE CRITICAL ROW <img src='https://example.invalid/a'>\u202e",
+        "kinds": ["panel\rFAKE TAB", "service\tFAKE"]
+      }},
+      "review": {
+      "securityImpact": {"level": "high", "reasons": [{"reference": findingReference, "title": "impact\nFAKE\u202e", "scope": "runtime"}]},
+      "evidenceConfidence": {"level": "medium", "high": 1, "medium": 1, "low": 0, "reasons": [{"reference": findingReference, "title": "impact", "scope": "runtime"}]},
       "analysisCoverage": {"level": "partial", "denominator": "retained supported executable, configuration, archive, and binary artifact files", "analyzedUnits": 1, "partialUnits": 1, "unanalyzedUnits": 1, "totalUnits": 3, "percentage": 33},
-      "unknownBehavior": {"level": "moderate", "unknowns": 1, "limitations": 1, "errors": 0, "reasons": []},
-      "counts": {"facts": 3, "inferences": 1, "unknownBehaviors": 1},
-      "mainReasons": [{"reference": "PP-1234567890ABCDEF", "title": "impact\nFAKE\u202e", "scope": "runtime"}]
-    }}
+      "unknownBehavior": {"level": "moderate", "unknowns": 1, "limitations": 0, "errors": 0, "reasons": [{"reference": unknownReference, "title": "snapshot binding unknown", "scope": "unknown"}]},
+      "counts": {"facts": 1, "inferences": 0, "unknownBehaviors": 1},
+      "mainReasons": [{"reference": findingReference, "title": "impact\nFAKE\u202e", "scope": "runtime"}, {"reference": unknownReference, "title": "snapshot binding unknown", "scope": "unknown"}]
+      },
+      "operations": [],
+      "findings": [{"reference": findingReference, "severity": "high", "claim": "fact", "title": "impact", "explanation": "retained finding", "scope": "runtime", "confidence": "high", "evidence": []}],
+      "resources": [],
+      "unknowns": [{"reference": unknownReference, "category": "external-evidence-binding", "reason": "unresolved-data-flow", "description": "snapshot binding unknown", "scope": "unknown", "confidence": "medium", "evidence": [], "origins": [], "affectedOperationIds": [], "suppressedRules": []}],
+      "relationships": [],
+      "limitations": [],
+      "errors": []
+    }))
+    if (panel.view !== "report" || !panel.currentReport || panel.currentReport.findings.length !== 1
+        || panel.currentReport.unknowns.length !== 1 || panel.errorText !== "") {
+      console.error("PLUG_PREJUDICE_PANEL_FAIL current 128-bit report acceptance")
+      Qt.exit(1)
+      return
+    }
     var authorClaim = panel.authorClaimLabel() + panel.authorClaimDescription()
     if (authorClaim.indexOf("AUTHOR CLAIM · KINDS · ") !== 0 || authorClaim.indexOf("<img") === -1
         || authorClaim.indexOf("\n") !== -1 || authorClaim.indexOf("\r") !== -1
@@ -85,7 +105,7 @@ ShellRoot {
     }
     var reviewText = panel.reviewSummaryText() + panel.reviewCountsText() + panel.mainReasonsText()
     if (!panel.validReviewSummary(panel.currentReport.review) || reviewText.indexOf("Security impact HIGH") === -1
-        || reviewText.indexOf("33%") === -1 || reviewText.indexOf("PP-1234567890ABCDEF") === -1
+        || reviewText.indexOf("33%") === -1 || reviewText.indexOf(findingReference) === -1
         || reviewText.indexOf("[runtime]") === -1
         || reviewText.indexOf("\n") !== -1 || reviewText.indexOf("\u202e") !== -1) {
       console.error("PLUG_PREJUDICE_PANEL_FAIL review summary rendering")
@@ -96,6 +116,13 @@ ShellRoot {
     invalidReview.analysisCoverage.percentage = 99
     if (panel.validReviewSummary(invalidReview)) {
       console.error("PLUG_PREJUDICE_PANEL_FAIL forged coverage accepted")
+      Qt.exit(1)
+      return
+    }
+    var staleReferenceReview = JSON.parse(JSON.stringify(panel.currentReport.review))
+    staleReferenceReview.securityImpact.reasons[0].reference = "PP-1234567890ABCDEF"
+    if (panel.validReviewSummary(staleReferenceReview)) {
+      console.error("PLUG_PREJUDICE_PANEL_FAIL obsolete 64-bit reference accepted")
       Qt.exit(1)
       return
     }
@@ -110,7 +137,7 @@ ShellRoot {
       return
     }
     var hostileOperation = {
-      "reference": "PP-1234567890ABCDEF",
+      "reference": "PP-1234567890ABCDEF1234567890ABCDEF",
       "category": "process-execution",
       "command": "<img src='https://example.invalid/a'>\nFAKE FINDING\u202e",
       "arguments": ["\u061c", "before\u001bafter\tFAKE META"],

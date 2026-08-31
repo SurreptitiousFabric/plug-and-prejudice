@@ -91,7 +91,7 @@ Item {
     for (var i = 0; i < reasons.length; i++) {
       var reason = reasons[i]
       if (!reason || typeof reason.title !== "string" || reason.title.length > 4096) return false
-      if (reason.reference !== undefined && !/^PP-[0-9A-F]{16}$/.test(String(reason.reference))) return false
+      if (reason.reference !== undefined && !/^PP-[0-9A-F]{32}$/.test(String(reason.reference))) return false
       if (reason.scope !== undefined && ["runtime", "repository-tooling", "unknown"].indexOf(String(reason.scope)) === -1) return false
     }
     return true
@@ -202,7 +202,7 @@ Item {
         throw new Error("report sections are missing")
       if (parsed.operations.length > 20000 || parsed.findings.length > 20000
           || parsed.resources.length > 20000 || parsed.unknowns.length > 20000 || parsed.limitations.length > 20000
-          || parsed.relationships.length > 660000
+          || parsed.relationships.length > 680000
           || parsed.errors.length > 10000)
         throw new Error("report sections exceed supported limits")
       currentReport = parsed

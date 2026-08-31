@@ -29,15 +29,15 @@ ShellRoot {
         }
       },
       "review": {
-        "securityImpact": {"level": "high", "reasons": [{"reference": "PP-0000000000000002", "title": "Downloads content and immediately executes it", "scope": "runtime"}]},
-        "evidenceConfidence": {"level": "high", "high": 3, "medium": 1, "low": 0, "reasons": [{"reference": "PP-0000000000000002", "title": "Downloads content and immediately executes it", "scope": "runtime"}]},
+        "securityImpact": {"level": "high", "reasons": [{"reference": "PP-00000000000000000000000000000002", "title": "Downloads content and immediately executes it", "scope": "runtime"}]},
+        "evidenceConfidence": {"level": "high", "high": 3, "medium": 1, "low": 0, "reasons": [{"reference": "PP-00000000000000000000000000000002", "title": "Downloads content and immediately executes it", "scope": "runtime"}]},
         "analysisCoverage": {"level": "substantial", "denominator": "retained supported executable, configuration, archive, and binary artifact files", "analyzedUnits": 5, "partialUnits": 1, "unanalyzedUnits": 0, "totalUnits": 6, "percentage": 83},
         "unknownBehavior": {"level": "moderate", "unknowns": 0, "limitations": 1, "errors": 1, "reasons": []},
         "counts": {"facts": 3, "inferences": 1, "unknownBehaviors": 0},
-        "mainReasons": [{"reference": "PP-0000000000000002", "title": "Downloads content and immediately executes it", "scope": "runtime"}]
+        "mainReasons": [{"reference": "PP-00000000000000000000000000000002", "title": "Downloads content and immediately executes it", "scope": "runtime"}]
       },
       "operations": [{
-        "reference": "PP-0000000000000001",
+        "reference": "PP-00000000000000000000000000000001",
         "category": "process-execution",
         "command": "curl",
         "arguments": ["-fsS", "https://example.invalid/install.sh"],
@@ -49,7 +49,7 @@ ShellRoot {
       }],
       "findings": [
         {
-          "reference": "PP-0000000000000002",
+          "reference": "PP-00000000000000000000000000000002",
           "severity": "high",
           "claim": "fact",
           "title": "Downloads content and immediately executes it",
@@ -65,7 +65,7 @@ ShellRoot {
           "provenance": {"ruleId": "download-execute/v1", "analyzer": "plug-prejudice/deterministic", "analyzerVersion": "visual", "evidenceSource": "target-source"}
         },
         {
-          "reference": "PP-0000000000000003",
+          "reference": "PP-00000000000000000000000000000003",
           "severity": "medium",
           "claim": "inference",
           "title": "Persistence may exceed the plugin's stated purpose",
@@ -82,7 +82,7 @@ ShellRoot {
         }
       ],
       "resources": [{
-        "reference": "PP-0000000000000004",
+        "reference": "PP-00000000000000000000000000000004",
         "kind": "filesystem",
         "access": "write",
         "sensitive": true,
@@ -93,7 +93,7 @@ ShellRoot {
         "provenance": {"ruleId": "path-write/v1", "analyzer": "plug-prejudice/deterministic", "analyzerVersion": "visual", "evidenceSource": "target-source"}
       }],
       "unknowns": [],
-      "relationships": [{"type": "established-by", "from": "PP-0000000000000002", "to": "PP-0000000000000001"}],
+      "relationships": [{"type": "established-by", "from": "PP-00000000000000000000000000000002", "to": "PP-00000000000000000000000000000001"}],
       "limitations": [{
         "code": "dynamic-command-target",
         "description": "A computed command target could not be resolved without executing plugin code.",
