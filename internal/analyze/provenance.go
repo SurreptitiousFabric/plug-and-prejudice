@@ -1,6 +1,9 @@
 package analyze
 
-import "github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
+import (
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/buildinfo"
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
+)
 
 const deterministicAnalyzer = "plug-prejudice/deterministic"
 const DevelopmentAnalyzerVersion = "development"
@@ -9,7 +12,7 @@ func sourceProvenance(ruleID string) report.Provenance {
 	return report.Provenance{
 		RuleID:          ruleID,
 		Analyzer:        deterministicAnalyzer,
-		AnalyzerVersion: DevelopmentAnalyzerVersion,
+		AnalyzerVersion: buildinfo.Version,
 		EvidenceSource:  report.EvidenceSourceTargetSource,
 	}
 }
