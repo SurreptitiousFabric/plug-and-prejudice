@@ -14,6 +14,43 @@ Include a minimal description, affected revision, impact, and reproduction
 steps that do not contain credentials or unrelated private data. Do not attach
 live malware, secrets, or raw private plugin repositories.
 
+GitHub private vulnerability reporting is enabled for this repository. Use the
+**Report a vulnerability** action on the repository's Security page. A public
+issue is appropriate only after coordinated disclosure or when the report has
+no security-sensitive details.
+
+## Maintainer response workflow
+
+For a private report, a maintainer should:
+
+1. acknowledge and classify the affected trust boundary without promising that
+   an unverified report is exploitable or harmless;
+2. reproduce with the smallest synthetic, non-secret input possible, never by
+   executing a submitted plugin;
+3. record affected revisions, architectures, prerequisites, impact, and known
+   limitations in the private advisory;
+4. develop and review the fix in the advisory's private fork when early public
+   disclosure would put users at risk;
+5. run the normal tests plus the security-specific sandbox, hostile-rendering,
+   dependency, vulnerability, and reproducibility checks relevant to the
+   boundary;
+6. coordinate a fixed release, checksums/provenance, upgrade instructions, and
+   advisory publication; and
+7. request a CVE through GitHub when the vulnerability and release impact
+   warrant one.
+
+Do not paste reporter data into public CI logs, issues, commits, or external
+models. If a report contains credentials or personal data, minimize access and
+ask the reporter to rotate or revoke exposed credentials; do not copy them into
+the advisory. Preserve only the evidence required to understand and fix the
+problem.
+
+Before the first release, a repository owner must exercise this workflow using
+a harmless private test report, confirm that maintainers can access and respond
+to it, and remove the test report according to GitHub's supported workflow. The
+exercise proves only that the intake path works; it does not validate incident
+response to a real vulnerability.
+
 ## Security claims
 
 A completed scan is not proof that a plugin is safe. Reports describe observed

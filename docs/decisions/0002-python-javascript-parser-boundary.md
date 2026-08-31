@@ -74,3 +74,13 @@ Before accepting the candidate dependency:
    vulnerabilities.
 5. Compare parsed call facts with CPython/Node oracles in test-only tooling.
 6. Require human approval of the resulting dependency and threat-model change.
+
+## Reviewer navigation
+
+The [parser boundary map](../parser-boundaries.md#python-and-javascript-execution-api-boundary)
+lists the exact file selectors, recognized process APIs, literal-flow boundary,
+failure behavior, resource caps, implementation files, and tests. The
+[dependency audit](../dependencies.md#python-and-javascript-grammar-origin)
+records `gotreesitter`'s pinned module version plus the exact upstream Python
+and JavaScript grammar commits. The required independent review steps are in
+[Track B](../human-review-guide.md#track-b-hostile-parsers-and-correlation-semantics).

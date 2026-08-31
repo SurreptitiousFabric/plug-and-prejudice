@@ -13,16 +13,44 @@ The two product binaries have three pinned non-standard-library module dependenc
 
 | Module | Version | Purpose | License | Integrity source |
 |---|---:|---|---|---|
-| `github.com/odvcencio/gotreesitter` | `v0.51.0` | Pure-Go, non-executing Python and JavaScript syntax trees with only those two grammar blobs embedded | MIT | Exact module and `go.mod` hashes in `go.sum`; upstream grammar lock records provenance |
+| `github.com/odvcencio/gotreesitter` | `v0.51.0` | Pure-Go, non-executing Python and JavaScript syntax trees with only those two grammar blobs embedded | MIT | Exact module and `go.mod` hashes in `go.sum`; authenticated module file `grammars/languages.lock` records upstream grammar commits |
 | `golang.org/x/sys` | `v0.47.0` | Official Linux `openat2`, `statx`, and descriptor-relative filesystem APIs | BSD-3-Clause | Exact module and `go.mod` hashes in `go.sum` |
 | `mvdan.cc/sh/v3` | `v3.13.1` | Parse shell source into an AST without evaluating it | BSD-3-Clause | Exact module and `go.mod` hashes in `go.sum` |
+
+### Python and JavaScript grammar origin
+
+The pinned `gotreesitter v0.51.0` module contains generated grammar blobs, a
+pure-Go parser runtime, and `grammars/languages.lock`. That lock traces the two
+production grammar blobs to:
+
+| Grammar | Upstream source | Commit recorded by the pinned module |
+|---|---|---|
+| JavaScript | `https://github.com/tree-sitter/tree-sitter-javascript` | `58404d8cf191d69f2674a8fd507bd5776f46cb11` |
+| Python | `https://github.com/tree-sitter/tree-sitter-python` | `26855eabccb19c6abf499fbc5b8dc7cc9ab8bc64` |
+
+The module download and its `go.mod` are authenticated by the exact `go.sum`
+entries. A reviewer can inspect the upstream lock carried inside those
+authenticated bytes with:
+
+```bash
+go mod verify
+module_dir="$(go env GOMODCACHE)/github.com/odvcencio/gotreesitter@v0.51.0"
+rg '^(javascript|python) ' "$module_dir/grammars/languages.lock"
+```
+
+This establishes traceability, not trustworthiness or parser correctness. A
+review still needs to inspect the dependency's release and maintenance
+practice, generated-grammar process, licenses, relevant vulnerabilities,
+malformed-input behavior, resource caps, and test evidence. The
+[plain-English parser boundary map](parser-boundaries.md) links those grammar
+origins to the exact claims this repository derives from their syntax trees.
 
 The scanner imports `mvdan.cc/sh/v3/syntax` and
 `mvdan.cc/sh/v3/fileutil`. It does not import the package's shell interpreter.
 The broker imports `x/sys/unix`; the scanner imports it for mount-boundary
 traversal and imports the pure-Go parser runtime. Production builds require the
-`grammar_subset_python` and `grammar_subset_javascript` tags so the remaining
-grammar registry is not embedded. The required binary
+`grammar_subset`, `grammar_subset_python`, and `grammar_subset_javascript` tags
+so the remaining grammar registry is not embedded. The required binary
 distribution notice is retained in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
 This inventory was derived with:

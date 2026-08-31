@@ -1,0 +1,40 @@
+pkgname=plug-and-prejudice
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Contained deterministic reviewer for installed Omarchy plugins'
+arch=('aarch64' 'x86_64')
+url='https://github.com/SurreptitiousFabric/plug-and-prejudice'
+license=('MIT')
+depends=('bubblewrap' 'systemd')
+makedepends=('go' 'gcc' 'glibc')
+source=("${pkgname}-${pkgver}.tar.gz::@SOURCE_URL@")
+sha256sums=('@SOURCE_SHA256@')
+
+_tags='netgo osusergo grammar_subset grammar_subset_python grammar_subset_javascript'
+_ldflags="-linkmode external -extldflags -static-pie -X github.com/SurreptitiousFabric/plug-and-prejudice/internal/buildinfo.Version=${pkgver}"
+
+build() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  export CGO_ENABLED=1
+  go build -mod=readonly -buildvcs=false -trimpath -buildmode=pie -tags "${_tags}" -ldflags "${_ldflags}" -o plug-prejudice ./cmd/plug-prejudice
+  go build -mod=readonly -buildvcs=false -trimpath -buildmode=pie -tags "${_tags}" -ldflags "${_ldflags}" -o plug-prejudice-broker ./cmd/plug-prejudice-broker
+}
+
+check() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  GOFLAGS="-buildvcs=false -tags=grammar_subset,grammar_subset_python,grammar_subset_javascript" go test ./...
+  for binary in plug-prejudice plug-prejudice-broker; do
+    if readelf --program-headers "${binary}" | grep -q INTERP; then return 1; fi
+    if readelf --dynamic "${binary}" 2>/dev/null | grep -q '(NEEDED)'; then return 1; fi
+  done
+  test "$(./plug-prejudice --version | sed -n 's/.*"reviewerVersion":"\([^"]*\)".*/\1/p')" = "${pkgver}"
+  test "$(./plug-prejudice-broker --version | sed -n 's/.*"reviewerVersion":"\([^"]*\)".*/\1/p')" = "${pkgver}"
+}
+
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  install -Dm755 plug-prejudice "${pkgdir}/usr/bin/plug-prejudice"
+  install -Dm755 plug-prejudice-broker "${pkgdir}/usr/bin/plug-prejudice-broker"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 THIRD_PARTY_NOTICES.md "${pkgdir}/usr/share/doc/${pkgname}/THIRD_PARTY_NOTICES.md"
+}
