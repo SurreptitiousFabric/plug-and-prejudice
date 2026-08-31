@@ -10,6 +10,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
@@ -58,6 +61,7 @@ const (
 	MaxRisks                    = 1024
 	MaxReasons                  = 1024
 	MaxStringBytes              = 4 << 10
+	MaxJSONDepth                = 64
 )
 
 type Report struct {
@@ -132,7 +136,7 @@ func Decode(data []byte, format string) (Report, error) {
 	if len(data) > MaxInputBytes {
 		return Report{}, fmt.Errorf("Omarchy audit exceeds %d-byte input limit", MaxInputBytes)
 	}
-	if err := rejectDuplicateMembers(data); err != nil {
+	if err := validateJSONStructure(data, reflect.TypeOf(Report{})); err != nil {
 		return Report{}, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -170,61 +174,18 @@ func DecodeEvidenceInput(data []byte, format string) (Report, report.EvidenceInp
 	return audit, input, nil
 }
 
-func rejectDuplicateMembers(data []byte) error {
+// validateJSONStructure rejects malformed Unicode and enforces the pinned
+// schema's exact member names before encoding/json can perform its
+// case-insensitive struct-field matching.
+func validateJSONStructure(data []byte, target reflect.Type) error {
+	if !utf8.Valid(data) {
+		return errors.New("Omarchy audit is not valid UTF-8")
+	}
+	if err := validateSurrogateEscapes(data); err != nil {
+		return fmt.Errorf("decode Omarchy audit strings: %w", err)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	var walk func(json.Token) error
-	walk = func(token json.Token) error {
-		delimiter, ok := token.(json.Delim)
-		if !ok {
-			return nil
-		}
-		switch delimiter {
-		case '{':
-			seen := make(map[string]bool)
-			for decoder.More() {
-				keyToken, err := decoder.Token()
-				if err != nil {
-					return err
-				}
-				key, ok := keyToken.(string)
-				if !ok {
-					return errors.New("Omarchy audit object member name is not a string")
-				}
-				if seen[key] {
-					return fmt.Errorf("Omarchy audit repeats JSON member %q", key)
-				}
-				seen[key] = true
-				value, err := decoder.Token()
-				if err != nil {
-					return err
-				}
-				if err := walk(value); err != nil {
-					return err
-				}
-			}
-			_, err := decoder.Token()
-			return err
-		case '[':
-			for decoder.More() {
-				value, err := decoder.Token()
-				if err != nil {
-					return err
-				}
-				if err := walk(value); err != nil {
-					return err
-				}
-			}
-			_, err := decoder.Token()
-			return err
-		default:
-			return errors.New("Omarchy audit contains an unexpected JSON delimiter")
-		}
-	}
-	token, err := decoder.Token()
-	if err != nil {
-		return fmt.Errorf("decode Omarchy audit tokens: %w", err)
-	}
-	if err := walk(token); err != nil {
+	if err := consumeTypedJSONValue(decoder, target, 0); err != nil {
 		return fmt.Errorf("decode Omarchy audit tokens: %w", err)
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
@@ -234,6 +195,149 @@ func rejectDuplicateMembers(data []byte) error {
 		return fmt.Errorf("decode Omarchy audit tokens: %w", err)
 	}
 	return nil
+}
+
+func consumeTypedJSONValue(decoder *json.Decoder, target reflect.Type, depth int) error {
+	if depth > MaxJSONDepth {
+		return fmt.Errorf("JSON nesting exceeds limit %d", MaxJSONDepth)
+	}
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, composite := token.(json.Delim)
+	if !composite {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		fields := exactJSONFields(target)
+		seen := make(map[string]struct{}, len(fields))
+		for decoder.More() {
+			nameToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := nameToken.(string)
+			if !ok {
+				return errors.New("object member name is not a string")
+			}
+			if _, exists := seen[name]; exists {
+				return fmt.Errorf("duplicate JSON object member %q", name)
+			}
+			seen[name] = struct{}{}
+			valueType, exists := fields[name]
+			if !exists {
+				return fmt.Errorf("unknown or incorrectly cased JSON member %q for %s", name, target)
+			}
+			if err := consumeTypedJSONValue(decoder, valueType, depth+1); err != nil {
+				return err
+			}
+		}
+	case '[':
+		if target.Kind() != reflect.Slice && target.Kind() != reflect.Array {
+			// Continue walking malformed composite values so their nesting is
+			// still bounded; the typed decoder will reject the type mismatch.
+			target = reflect.TypeOf([]any{})
+		}
+		for decoder.More() {
+			if err := consumeTypedJSONValue(decoder, target.Elem(), depth+1); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	want := json.Delim('}')
+	if delimiter == '[' {
+		want = ']'
+	}
+	if closing != want {
+		return fmt.Errorf("mismatched JSON delimiter %q", closing)
+	}
+	return nil
+}
+
+func exactJSONFields(target reflect.Type) map[string]reflect.Type {
+	fields := make(map[string]reflect.Type)
+	if target.Kind() != reflect.Struct {
+		return fields
+	}
+	for index := 0; index < target.NumField(); index++ {
+		field := target.Field(index)
+		if field.PkgPath != "" {
+			continue
+		}
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if name == "" {
+			name = field.Name
+		}
+		if name != "-" {
+			fields[name] = field.Type
+		}
+	}
+	return fields
+}
+
+func validateSurrogateEscapes(data []byte) error {
+	inString, escaped := false, false
+	for index := 0; index < len(data); index++ {
+		value := data[index]
+		if !inString {
+			if value == '"' {
+				inString = true
+			}
+			continue
+		}
+		if escaped {
+			escaped = false
+			if value != 'u' {
+				continue
+			}
+			code, next, err := parseUnicodeEscape(data, index-1)
+			if err != nil {
+				return err
+			}
+			index = next - 1
+			if code >= 0xd800 && code <= 0xdbff {
+				if next+6 > len(data) || data[next] != '\\' || data[next+1] != 'u' {
+					return errors.New("unpaired high UTF-16 surrogate escape")
+				}
+				low, after, err := parseUnicodeEscape(data, next)
+				if err != nil || low < 0xdc00 || low > 0xdfff {
+					return errors.New("malformed UTF-16 surrogate pair")
+				}
+				index = after - 1
+			} else if code >= 0xdc00 && code <= 0xdfff {
+				return errors.New("unpaired low UTF-16 surrogate escape")
+			}
+			continue
+		}
+		if value == '\\' {
+			escaped = true
+		} else if value == '"' {
+			inString = false
+		}
+	}
+	return nil
+}
+
+func parseUnicodeEscape(data []byte, slash int) (uint64, int, error) {
+	if slash+6 > len(data) || data[slash] != '\\' || data[slash+1] != 'u' {
+		return 0, slash, errors.New("malformed Unicode escape")
+	}
+	value, err := strconv.ParseUint(string(data[slash+2:slash+6]), 16, 16)
+	if err != nil {
+		return 0, slash, errors.New("malformed Unicode escape")
+	}
+	return value, slash + 6, nil
 }
 
 func (r Report) Validate() error {

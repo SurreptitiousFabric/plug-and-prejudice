@@ -1,6 +1,7 @@
 package omarchyaudit
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -100,6 +101,116 @@ func TestDecodePinnedAuditFormatStrictly(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDecodeRejectsIncorrectlyCasedMembersAtEveryLevel(t *testing.T) {
+	audit := validAudit()
+	audit.Risks = []Risk{{Severity: "medium", Kind: "example", Detail: "detail"}}
+	audit.Summary.Risks = 1
+	canonical, err := json.Marshal(audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{"id alias alongside canonical", addRootMember(canonical, `"ID":"replacement"`)},
+		{"observed alias alongside canonical", addRootMember(canonical, `"OBSERVED":{"commands":[],"network":[],"reads":[],"writes":[]}`)},
+		{"single incorrectly cased id", bytes.Replace(canonical, []byte(`"id"`), []byte(`"ID"`), 1)},
+		{"nested command name alias", bytes.Replace(canonical, []byte(`"name":"curl"`), []byte(`"name":"curl","NAME":"hidden"`), 1)},
+		{"nested risk severity alias", bytes.Replace(canonical, []byte(`"severity":"medium"`), []byte(`"severity":"medium","SEVERITY":"high"`), 1)},
+		{"escaped exact duplicate", addRootMember(canonical, `"\u0069d":"replacement"`)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := Decode(test.data, FormatPR8439Revision732b104); err == nil {
+				t.Fatal("incorrectly cased or duplicate schema member was accepted")
+			}
+		})
+	}
+}
+
+func TestDecodeRejectsMalformedUnicodeBeforeJSONNormalization(t *testing.T) {
+	canonical, err := json.Marshal(validAudit())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name        string
+		replacement []byte
+	}{
+		{"raw invalid UTF-8", []byte{'"', 0xff, '"'}},
+		{"lone high surrogate", []byte(`"\ud800"`)},
+		{"lone low surrogate", []byte(`"\udc00"`)},
+		{"malformed surrogate pair", []byte(`"\ud800\u0041"`)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data := bytes.Replace(canonical, []byte(`"example.plugin"`), test.replacement, 1)
+			if _, err := Decode(data, FormatPR8439Revision732b104); err == nil {
+				t.Fatal("malformed Unicode was accepted")
+			}
+		})
+	}
+	invalidMember := bytes.Replace(canonical, []byte(`"id"`), []byte{'"', 'i', 0xff, '"'}, 1)
+	if _, err := Decode(invalidMember, FormatPR8439Revision732b104); err == nil {
+		t.Fatal("raw invalid UTF-8 in member name was accepted")
+	}
+	validPair := bytes.Replace(canonical, []byte(`"example.plugin"`), []byte(`"\ud83d\ude00"`), 1)
+	if decoded, err := Decode(validPair, FormatPR8439Revision732b104); err != nil || decoded.ID != "😀" {
+		t.Fatalf("valid surrogate pair decoded as ID %q, error %v", decoded.ID, err)
+	}
+
+	audit := validAudit()
+	audit.Risks = []Risk{{Severity: "medium", Kind: "unicode", Detail: "genuine � value"}}
+	audit.Summary.Risks = 1
+	data, err := json.Marshal(audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(data, FormatPR8439Revision732b104)
+	if err != nil {
+		t.Fatalf("genuine U+FFFD rejected: %v", err)
+	}
+	if got := decoded.Risks[0].Detail; got != audit.Risks[0].Detail {
+		t.Fatalf("U+FFFD changed during decode: got %q want %q", got, audit.Risks[0].Detail)
+	}
+}
+
+func TestDecodeRejectsExcessiveJSONNesting(t *testing.T) {
+	canonical, err := json.Marshal(validAudit())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deep := []byte(strings.Repeat("[", MaxJSONDepth+2) + `"example.plugin"` + strings.Repeat("]", MaxJSONDepth+2))
+	data := bytes.Replace(canonical, []byte(`"example.plugin"`), deep, 1)
+	if _, err := Decode(data, FormatPR8439Revision732b104); err == nil || !strings.Contains(err.Error(), "nesting exceeds") {
+		t.Fatalf("over-depth audit error = %v", err)
+	}
+}
+
+func TestDecodeEvidenceInputRejectsAliasesThatHideObservationsAndRisks(t *testing.T) {
+	audit := validAudit()
+	audit.Risks = []Risk{{Severity: "high", Kind: "hidden", Detail: "must remain visible"}}
+	audit.Summary.HighRisks = 1
+	audit.Summary.Risks = 1
+	canonical, err := json.Marshal(audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostile := addRootMember(canonical, `"OBSERVED":{"commands":[],"network":[],"reads":[],"writes":[]},"RISKS":[],"SUMMARY":{"undeclaredCommands":0,"undeclaredNetwork":0,"undeclaredReads":0,"undeclaredWrites":0,"highRisks":0,"risks":0}`)
+	if _, _, err := DecodeEvidenceInput(hostile, FormatPR8439Revision732b104); err == nil {
+		t.Fatal("case aliases hid imported observations and risks")
+	}
+}
+
+func addRootMember(data []byte, member string) []byte {
+	result := append([]byte(nil), data[:len(data)-1]...)
+	result = append(result, ',')
+	result = append(result, member...)
+	return append(result, '}')
 }
 
 func TestAuditCollectionsAndStringsAreBounded(t *testing.T) {
