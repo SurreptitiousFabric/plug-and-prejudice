@@ -51,6 +51,36 @@ paths, fixed arguments, cleared environment, safe file descriptors, and strict
 plugin-ID resolution. Target content must never influence Bubblewrap options or
 host paths.
 
+The supported higher-assurance path is the independently installed CLI started
+from the normal host session. The containment claim assumes the real host user
+and mount namespaces and does not authenticate an arbitrary caller's namespace
+view. Launch inside an attacker-created namespace with substituted `/usr`,
+`/run`, procfs, or cgroupfs is outside the deployment precondition. This is
+distinct from hostile plugin files, which are fully in scope as inert static
+input. An already-enabled same-user malicious plugin is active session code and
+may interfere with the desktop wrapper or user presentation before review.
+
+The broker enters a verified transient systemd user scope before target
+resolution. The scope bounds memory, swap, tasks, aggregate CPU, and lifetime;
+process rlimits disable core dumps and cap open descriptors. The broker fails
+closed if the user manager or cgroup-v2 controls cannot establish and prove the
+policy.
+
+Trusted systemd tools receive a validated minimal environment: a checked
+`/run/user/<euid>` location plus fixed locale and presentation controls. The
+broker does not inherit loader, D-Bus override, systemd override, pager,
+configuration, or Go-runtime variables into these executions. Whole-scope
+teardown observes the exact cgroup become unpopulated or collected; an accepted
+asynchronous kill request alone is not completion evidence.
+
+Plugin listing is also performed only after this verification and is incremental
+and bounded. The production scanner and all three containment executables are
+root-owned, non-group/world-writable pinned inodes. The selected plugin is
+opened descriptor-relatively beneath a pinned plugin root. Scanner traversal is
+rooted at that descriptor. A bounded second pass rechecks the complete observed
+path set, directory membership, and identity/metadata; detected target mutation
+aborts the report.
+
 ### Omarchy wrapper
 
 Trusted but hosted in the same unsandboxed `omarchy-shell` process as enabled
@@ -85,8 +115,8 @@ payload before disclosure.
 | Arbitrary file read | Empty filesystem view; only target is read-only mounted |
 | Host modification | Dedicated output and temporary areas; read-only runtime; no session sockets |
 | Network access | Private network namespace with no shared host network |
-| Path escape | Canonical broker resolution; mount boundary; no symlink following; bounded traversal |
-| Parser denial of service | File/depth/byte/time/memory/process/output limits |
+| Path escape | Boundary executables and the trusted configured root reject symlink/magic-link traversal; selected-target resolution is beneath the pinned root and rejects mount crossing; nested-path mount handling remains a later selected-tree boundary |
+| Parser denial of service | File/depth/byte/output limits; verified systemd memory/swap/task/CPU scope; independent wall timeout; core/file-descriptor rlimits |
 | Report injection | Strict JSON schema; plain-text renderer; control-character normalization |
 | False reassurance | Explicit limitations; no safe verdict or opaque score |
 | False positives | Parsed context, correlated behavior, benign fixtures, separate confidence |
@@ -95,6 +125,11 @@ payload before disclosure.
 ## Residual risks
 
 - Scanner or kernel vulnerabilities may escape containment.
+- Two bounded descriptor-rooted passes verify a stable observed tree by
+  comparing path membership, device/inode, type, mode, size, link count, mtime,
+  ctime, and symlink targets. This is not an atomic filesystem snapshot; a
+  complete change-and-revert between observations remains outside the
+  guarantee.
 - The target bind is read-only but not proven `noexec`; containment does not
   replace the scanner's invariant that target content is never passed to an
   execution API.
@@ -103,5 +138,10 @@ payload before disclosure.
 - Binary inventory cannot establish what a native helper will do at runtime.
 - An enabled malicious plugin already has user-session authority before review.
 - A compromised build/release channel can replace the reviewer itself.
+- Root, kernel, package-manager, or systemd-manager compromise can replace
+  trusted installed components and is outside the plugin attacker model.
+- Launching the broker inside attacker-controlled user/mount namespaces that
+  forge the apparent `/usr`, `/run`, procfs, or cgroupfs view is outside the
+  supported host-session assumption.
 
 These risks must remain visible in user-facing reports and release documentation.

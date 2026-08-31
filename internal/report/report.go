@@ -60,11 +60,20 @@ type Report struct {
 }
 
 type ScanMetadata struct {
-	ScannerVersion string    `json:"scannerVersion"`
-	PolicyVersion  string    `json:"policyVersion"`
-	StartedAt      time.Time `json:"startedAt"`
-	CompletedAt    time.Time `json:"completedAt"`
-	Sandboxed      bool      `json:"sandboxed"`
+	ScannerVersion string          `json:"scannerVersion"`
+	PolicyVersion  string          `json:"policyVersion"`
+	StartedAt      time.Time       `json:"startedAt"`
+	CompletedAt    time.Time       `json:"completedAt"`
+	Sandboxed      bool            `json:"sandboxed"`
+	ResourceLimits *ResourceLimits `json:"resourceLimits,omitempty"`
+}
+
+type ResourceLimits struct {
+	MemoryMaxBytes  int64 `json:"memoryMaxBytes"`
+	MemorySwapBytes int64 `json:"memorySwapBytes"`
+	TasksMax        int   `json:"tasksMax"`
+	CPUQuotaPercent int   `json:"cpuQuotaPercent"`
+	WallTimeSeconds int   `json:"wallTimeSeconds"`
 }
 
 type Target struct {

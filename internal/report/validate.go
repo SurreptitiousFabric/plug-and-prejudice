@@ -46,6 +46,14 @@ func (r Report) Validate() error {
 	if r.Scan.StartedAt.IsZero() || r.Scan.CompletedAt.IsZero() || r.Scan.CompletedAt.Before(r.Scan.StartedAt) {
 		return errors.New("invalid scan timestamps")
 	}
+	if r.Scan.Sandboxed != (r.Scan.ResourceLimits != nil) {
+		return errors.New("sandbox and resource-limit metadata must be established together")
+	}
+	if limits := r.Scan.ResourceLimits; limits != nil {
+		if limits.MemoryMaxBytes <= 0 || limits.MemorySwapBytes < 0 || limits.TasksMax <= 0 || limits.CPUQuotaPercent <= 0 || limits.CPUQuotaPercent > 100 || limits.WallTimeSeconds <= 0 {
+			return errors.New("invalid resource-limit metadata")
+		}
+	}
 	if r.Target.DisplayName == "" || r.Target.FileCount < 0 || r.Target.ReadBytes < 0 || r.Target.BinaryBytes < 0 {
 		return errors.New("invalid target metadata")
 	}

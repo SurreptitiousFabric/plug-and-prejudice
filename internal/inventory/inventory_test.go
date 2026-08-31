@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,120 @@ import (
 
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
 )
+
+func TestScanFailsClosedWhenFileMutatesDuringRead(t *testing.T) {
+	target := t.TempDir()
+	file := filepath.Join(target, "mutable.js")
+	mustWrite(t, file, "const value = 'before';")
+	_, err := scan(target, DefaultLimits(), func(event, filePath string) {
+		if event == "file-read" && filePath == "mutable.js" {
+			mustWrite(t, file, "const value = 'after!';")
+		}
+	})
+	if !errors.Is(err, ErrTargetChanged) {
+		t.Fatalf("mutation result = %v, want ErrTargetChanged", err)
+	}
+}
+
+func TestScanFailsClosedWhenPinnedFilePathIsReplaced(t *testing.T) {
+	target := t.TempDir()
+	file := filepath.Join(target, "mutable.js")
+	mustWrite(t, file, "original")
+	_, err := scan(target, DefaultLimits(), func(event, filePath string) {
+		if event == "file-opened" && filePath == "mutable.js" {
+			replacement := filepath.Join(target, "replacement")
+			mustWrite(t, replacement, "replacement")
+			if renameErr := os.Rename(replacement, file); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+		}
+	})
+	if !errors.Is(err, ErrTargetChanged) {
+		t.Fatalf("replacement result = %v, want ErrTargetChanged", err)
+	}
+}
+
+func TestScanFailsClosedWhenIntermediateDirectoryIsReplaced(t *testing.T) {
+	target := t.TempDir()
+	directory := filepath.Join(target, "nested")
+	mustWrite(t, filepath.Join(directory, "file"), "original")
+	_, err := scan(target, DefaultLimits(), func(event, filePath string) {
+		if event == "directory-opened" && filePath == "nested" {
+			moved := filepath.Join(target, "moved")
+			if renameErr := os.Rename(directory, moved); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+			if mkdirErr := os.Mkdir(directory, 0o700); mkdirErr != nil {
+				t.Fatal(mkdirErr)
+			}
+		}
+	})
+	if !errors.Is(err, ErrTargetChanged) {
+		t.Fatalf("directory replacement result = %v, want ErrTargetChanged", err)
+	}
+}
+
+func TestScanFinalVerificationRejectsEarlyFileChangedWhileLaterFileIsInspected(t *testing.T) {
+	target := t.TempDir()
+	early := filepath.Join(target, "a.sh")
+	mustWrite(t, early, "echo early")
+	mustWrite(t, filepath.Join(target, "b.qml"), "Item {}")
+	result, err := scan(target, DefaultLimits(), func(event, filePath string) {
+		if event == "file-opened" && filePath == "b.qml" {
+			mustWrite(t, early, "echo changed")
+		}
+	})
+	if !errors.Is(err, ErrTargetChanged) || len(result.Files) != 0 || len(result.Contents) != 0 {
+		t.Fatalf("cross-file mutation result = %#v, %v; want empty ErrTargetChanged", result, err)
+	}
+}
+
+func TestScanFinalVerificationRejectsEarlyDirectoryChangedDuringLaterTraversal(t *testing.T) {
+	target := t.TempDir()
+	early := filepath.Join(target, "a-early")
+	mustWrite(t, filepath.Join(early, "one.js"), "one")
+	mustWrite(t, filepath.Join(target, "z-late", "two.qml"), "two")
+	result, err := scan(target, DefaultLimits(), func(event, filePath string) {
+		if event == "directory-opened" && filePath == "z-late" {
+			mustWrite(t, filepath.Join(early, "added.js"), "added")
+		}
+	})
+	if !errors.Is(err, ErrTargetChanged) || len(result.Files) != 0 {
+		t.Fatalf("cross-directory mutation result = %#v, %v", result, err)
+	}
+}
+
+func TestScanFinalVerificationRejectsAddedRemovedOrReplacedEntry(t *testing.T) {
+	for _, mode := range []string{"add", "remove", "replace"} {
+		t.Run(mode, func(t *testing.T) {
+			target := t.TempDir()
+			original := filepath.Join(target, "a.sh")
+			mustWrite(t, original, "original")
+			result, err := scan(target, DefaultLimits(), func(event, _ string) {
+				if event != "initial-pass-complete" {
+					return
+				}
+				switch mode {
+				case "add":
+					mustWrite(t, filepath.Join(target, "added.qml"), "added")
+				case "remove":
+					if removeErr := os.Remove(original); removeErr != nil {
+						t.Fatal(removeErr)
+					}
+				case "replace":
+					replacement := filepath.Join(target, "replacement")
+					mustWrite(t, replacement, "replacement")
+					if renameErr := os.Rename(replacement, original); renameErr != nil {
+						t.Fatal(renameErr)
+					}
+				}
+			})
+			if !errors.Is(err, ErrTargetChanged) || len(result.Files) != 0 || len(result.Contents) != 0 {
+				t.Fatalf("%s result = %#v, %v; want empty ErrTargetChanged", mode, result, err)
+			}
+		})
+	}
+}
 
 func TestScanInventoriesRegularFilesWithoutFollowingSymlinks(t *testing.T) {
 	target := t.TempDir()
@@ -50,8 +165,8 @@ func TestScanStopsAtFileCountLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Files) != 2 {
-		t.Fatalf("files = %d, want 2", len(result.Files))
+	if len(result.Files) != 0 {
+		t.Fatalf("overflowing directory files = %d, want 0", len(result.Files))
 	}
 	if !hasLimitation(result, "max-files") {
 		t.Fatal("missing max-files limitation")

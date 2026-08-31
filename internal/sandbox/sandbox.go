@@ -6,34 +6,64 @@ import (
 	"debug/elf"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/policy"
+	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/trustedexec"
+	"golang.org/x/sys/unix"
 )
+
+const bubblewrapPath = "/usr/bin/bwrap"
 
 const (
 	MaxReportBytes = 16 << 20
 	MaxStderrBytes = 64 << 10
-	DefaultTimeout = 30 * time.Second
 )
 
 type Runner struct {
-	Bubblewrap string
-	Timeout    time.Duration
+	Bubblewrap              string
+	Timeout                 time.Duration
+	AllowDevelopmentScanner bool
+}
+
+type boundedBuffer struct {
+	buffer bytes.Buffer
+	limit  int
+	cancel context.CancelFunc
+	err    error
+}
+
+func (b *boundedBuffer) Write(data []byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
+	remaining := b.limit - b.buffer.Len()
+	if len(data) <= remaining {
+		return b.buffer.Write(data)
+	}
+	if remaining > 0 {
+		_, _ = b.buffer.Write(data[:remaining])
+	}
+	b.err = fmt.Errorf("output exceeded %d-byte limit", b.limit)
+	b.cancel()
+	return remaining, b.err
 }
 
 func DefaultRunner() (Runner, error) {
-	bwrap, err := exec.LookPath("bwrap")
+	bwrap, err := trustedexec.Open(bubblewrapPath)
 	if err != nil {
-		return Runner{}, errors.New("bubblewrap is required; refusing to scan without containment")
+		return Runner{}, fmt.Errorf("trusted bubblewrap is required; refusing to scan without containment: %w", err)
 	}
-	return Runner{Bubblewrap: bwrap, Timeout: DefaultTimeout}, nil
+	defer bwrap.Close()
+	return Runner{Bubblewrap: bubblewrapPath, Timeout: policy.WallTime}, nil
 }
 
-func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName string) ([]byte, error) {
+func (r Runner) Run(ctx context.Context, scannerPath string, target *os.File, displayName string) ([]byte, error) {
 	if r.Bubblewrap == "" {
 		return nil, errors.New("bubblewrap path is empty")
 	}
@@ -43,65 +73,56 @@ func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName st
 	if !validDisplayName(displayName) {
 		return nil, errors.New("sandbox display name is invalid")
 	}
-	scanner, err := openPinned(scannerPath, false)
-	if err != nil {
-		return nil, fmt.Errorf("pin scanner: %w", err)
+	var scanner *os.File
+	var trustedScanner *trustedexec.Executable
+	var err error
+	if r.AllowDevelopmentScanner {
+		scanner, err = openPinned(scannerPath, false)
+	} else {
+		trustedScanner, err = trustedexec.Open(scannerPath)
+		if err == nil {
+			scanner = trustedScanner.File()
+		}
 	}
-	defer scanner.Close()
+	if err != nil {
+		return nil, fmt.Errorf("pin trusted scanner: %w", err)
+	}
+	if trustedScanner != nil {
+		defer trustedScanner.Close()
+	} else {
+		defer scanner.Close()
+	}
 	if err := requireStaticELF(scanner); err != nil {
 		return nil, fmt.Errorf("validate scanner executable: %w", err)
 	}
-	target, err := openPinned(targetPath, true)
-	if err != nil {
-		return nil, fmt.Errorf("pin target: %w", err)
+	if target == nil {
+		return nil, errors.New("pinned target descriptor is required")
 	}
-	defer target.Close()
+	targetInfo, err := target.Stat()
+	if err != nil || !targetInfo.IsDir() {
+		return nil, errors.New("pinned target descriptor is not a directory")
+	}
 
 	timed, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(timed, r.Bubblewrap, Arguments("/proc/self/fd/3", "/proc/self/fd/4", displayName)...)
+	bwrap, err := trustedexec.Open(r.Bubblewrap)
+	if err != nil {
+		return nil, fmt.Errorf("pin bubblewrap: %w", err)
+	}
+	defer bwrap.Close()
+	procPath, args, err := bwrap.CommandPath(Arguments("/proc/self/fd/3", "/proc/self/fd/4", displayName)...)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(timed, procPath, args...)
+	cmd.WaitDelay = policy.ProcessWaitDelay
 	cmd.ExtraFiles = []*os.File{scanner, target}
 	cmd.Env = []string{}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("open scanner output: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("open scanner diagnostics: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start sandbox: %w", err)
-	}
-
-	type readResult struct {
-		data []byte
-		err  error
-	}
-	readBounded := func(reader io.Reader, limit int64) readResult {
-		var buf bytes.Buffer
-		_, copyErr := io.Copy(&buf, io.LimitReader(reader, limit+1))
-		if copyErr != nil {
-			return readResult{err: copyErr}
-		}
-		if int64(buf.Len()) > limit {
-			return readResult{err: fmt.Errorf("output exceeded %d-byte limit", limit)}
-		}
-		return readResult{data: buf.Bytes()}
-	}
-	outCh := make(chan readResult, 1)
-	errCh := make(chan readResult, 1)
-	go func() { outCh <- readBounded(stdout, MaxReportBytes) }()
-	go func() { errCh <- readBounded(stderr, MaxStderrBytes) }()
-	out := <-outCh
-	if out.err != nil {
-		cancel()
-	}
-	diagnostics := <-errCh
-	if diagnostics.err != nil {
-		cancel()
-	}
-	waitErr := cmd.Wait()
+	out := &boundedBuffer{limit: MaxReportBytes, cancel: cancel}
+	diagnostics := &boundedBuffer{limit: MaxStderrBytes, cancel: cancel}
+	cmd.Stdout = out
+	cmd.Stderr = diagnostics
+	waitErr := cmd.Run()
 	if out.err != nil {
 		return nil, fmt.Errorf("read scanner output: %w", out.err)
 	}
@@ -109,12 +130,12 @@ func (r Runner) Run(ctx context.Context, scannerPath, targetPath, displayName st
 		return nil, fmt.Errorf("read scanner diagnostics: %w", diagnostics.err)
 	}
 	if errors.Is(timed.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("sandbox timed out after %s", r.Timeout)
+		return nil, fmt.Errorf("sandbox timed out after %s: %s", r.Timeout, safeDiagnostic(diagnostics.buffer.Bytes()))
 	}
 	if waitErr != nil {
-		return nil, fmt.Errorf("sandboxed scanner failed: %w: %s", waitErr, safeDiagnostic(diagnostics.data))
+		return nil, fmt.Errorf("sandboxed scanner failed: %w: %s", waitErr, safeDiagnostic(diagnostics.buffer.Bytes()))
 	}
-	return out.data, nil
+	return out.buffer.Bytes(), nil
 }
 
 func requireStaticELF(scanner *os.File) error {
@@ -160,7 +181,7 @@ func Arguments(scannerSource, targetSource, displayName string) []string {
 		"--dir", "/tmp",
 		"--chdir", "/target",
 		"--",
-		"/app/plug-prejudice", "--target", "/target", "--display-name", displayName, "--sandboxed",
+		"/app/plug-prejudice", "--target", "/target", "--display-name", displayName, "--sandboxed", "--resource-limited",
 	}
 }
 
@@ -185,30 +206,27 @@ func openPinned(name string, wantDirectory bool) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	linked, err := os.Lstat(clean)
+	flags := uint64(unix.O_RDONLY | unix.O_CLOEXEC)
+	if wantDirectory {
+		flags |= unix.O_DIRECTORY
+	}
+	fd, err := unix.Openat2(unix.AT_FDCWD, clean, &unix.OpenHow{
+		Flags:   flags,
+		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if linked.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("symbolic-link endpoints are not allowed")
-	}
-	if wantDirectory != linked.IsDir() {
-		if wantDirectory {
-			return nil, errors.New("target is not a directory")
-		}
-		return nil, errors.New("scanner is not a regular file")
-	}
-	if !wantDirectory && !linked.Mode().IsRegular() {
-		return nil, errors.New("scanner is not a regular file")
-	}
-	f, err := os.Open(clean)
-	if err != nil {
-		return nil, err
-	}
+	f := os.NewFile(uintptr(fd), clean)
 	opened, err := f.Stat()
-	if err != nil || !os.SameFile(linked, opened) {
+	if err != nil {
 		_ = f.Close()
-		return nil, errors.New("path identity changed while being opened")
+		return nil, err
+	}
+	stat, ok := opened.Sys().(*syscall.Stat_t)
+	if !ok || stat.Nlink == 0 || wantDirectory != opened.IsDir() || (!wantDirectory && !opened.Mode().IsRegular()) {
+		_ = f.Close()
+		return nil, errors.New("opened descriptor has unexpected type or identity")
 	}
 	return f, nil
 }

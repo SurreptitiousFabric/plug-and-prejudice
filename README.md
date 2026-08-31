@@ -11,7 +11,7 @@ that a plugin is safe.
 
 The project is under active development. The bounded scanner, fail-closed
 Bubblewrap broker, and tested Omarchy panel prototype exist, but analysis
-coverage, resource accounting, release packaging, and release-stable report
+coverage, release packaging, and release-stable report
 schema are not complete. Do not treat this as a release.
 
 The approved first release will:
@@ -27,6 +27,18 @@ The approved first release will:
 See [the architecture](docs/architecture.md), [threat model](docs/threat-model.md),
 tested [sandbox policy](docs/sandbox-policy.md), and [security policy](SECURITY.md)
 before contributing.
+
+## Supported higher-assurance launch model
+
+The higher-assurance path is the independently installed CLI launched from the
+normal host desktop session. Its containment claims assume the real host user
+and mount namespaces, the normal host `/usr`, `/run`, procfs and cgroupfs views,
+and trusted package installation. Invocation from an attacker-created user or
+mount namespace is unsupported; the broker does not authenticate an arbitrary
+caller's namespaces. Hostile plugin files selected for static inspection are
+inside the threat model. A same-user malicious plugin that is already enabled
+and executing has broader session authority and may interfere with the desktop
+wrapper, which is why the separately launched CLI is the recovery interface.
 
 The versioned structured output and hostile-presentation rules are described in
 the [report contract](docs/report-contract.md).

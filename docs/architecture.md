@@ -28,6 +28,13 @@ The scanner is an independent CLI. The Omarchy component is only selection,
 progress, and presentation. Deterministic analysis has no network access and no
 LLM dependency.
 
+The supported higher-assurance deployment is a root-installed CLI launched
+from the normal host session. It assumes the caller has not first placed it in
+an attacker-created user or mount namespace; the broker cannot authenticate an
+arbitrary caller's namespace view. The Omarchy wrapper remains convenient but
+shares a process with already-enabled plugins and is not equivalent to this
+independent recovery path.
+
 ## Components
 
 ### Omarchy wrapper
@@ -41,10 +48,15 @@ LLM dependency.
 
 ### Broker
 
-- Resolves an installed plugin identity to an approved canonical directory.
+- Lists plugin identities incrementally only after entering verified resource
+  containment, and resolves a selected identity beneath a pinned plugin root.
 - Records Git revision and working-tree state without running repository hooks.
 - Constructs a fixed Bubblewrap command from trusted constants.
 - Creates a controlled output area and applies resource/time limits.
+- Re-enters a randomized, verified systemd user scope before resolving the
+  target, verifies the actual runtime limit, then applies process rlimits and
+  constructs Bubblewrap containment. The outer broker terminates the whole
+  scope after completion or failure.
 - Fails closed if required isolation cannot be established.
 
 ### Deterministic scanner
@@ -53,6 +65,10 @@ LLM dependency.
 - Reads only `/target` and writes only its controlled output.
 - Does not execute target files or invoke language runtimes on them.
 - Applies bounded inventory, parsing, data-flow, correlation, and reporting.
+- Aborts rather than emitting normal evidence when descriptor-rooted traversal
+  detects target mutation during observation. A bounded second pass verifies
+  the complete observed path set and metadata immediately before report
+  construction; this is consistency verification, not an atomic snapshot.
 
 ### Optional LLM stage
 
