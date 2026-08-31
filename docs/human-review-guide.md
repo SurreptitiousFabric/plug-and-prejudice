@@ -9,6 +9,12 @@ No review task may execute, source, import, or evaluate a target plugin. Use
 only inert fixtures read as data. Do not include credentials, private plugin
 source, live malware, or personal configuration in retained evidence.
 
+The GitHub issue for each review track must be a self-contained entry point. It
+links every named ADR, guide section, implementation area, focused pull request,
+safe command, and evidence template. Security-review links use a commit snapshot
+so their content does not move during review; the reviewer separately records
+the exact candidate commit on which the conclusion is based.
+
 ## Evidence record
 
 For every review, record:
@@ -58,9 +64,50 @@ escape, and denial-of-service observations.
 
 ## Track B: hostile parsers and correlation semantics
 
-Read ADRs 0002, 0008, and 0010–0019 plus `internal/analyze/`, parser dependency
-locks, `docs/analysis-rules.md`, `docs/detection-rules.md`, and
-`docs/severity-model.md`.
+### What this track is asking
+
+In plain English: check that hostile file bytes cannot make a parser run target
+code, consume unbounded resources, or claim more than the recognized syntax
+proves. Then check that the correlation stage does not turn separate facts into
+an invented story about runtime behavior.
+
+A **grammar boundary** is the documented limit around file selection, syntax,
+allowed claims, failure behavior, and resource use. The
+[parser and grammar boundary map](parser-boundaries.md) defines those five terms,
+lists every supported input, and links each boundary to its design record,
+implementation, tests, limits, and dependency origin.
+
+**Dependency provenance** means being able to trace parser code and generated
+grammar data to an exact module version, authenticated module bytes, upstream
+grammar repository and commit, license, production linkage, and review result.
+Start with the [dependency audit](dependencies.md#production-go-dependencies),
+[`go.mod`](../go.mod), [`go.sum`](../go.sum), and
+[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). The boundary map records
+the exact Python and JavaScript grammar commits and the command that reads their
+authenticated upstream lock.
+
+### Review map
+
+Do not read “ADRs 0010–0019” as an unexplained bundle. The
+[ADR index](decisions/README.md) gives a one-sentence purpose and direct link for
+every record. For this track, use this map:
+
+| Area | Design and behavior | Implementation and evidence |
+|---|---|---|
+| Shell, Python, and JavaScript parsing | [ADR 0002](decisions/0002-python-javascript-parser-boundary.md), [shell rules](analysis-rules.md#shell-syntax), [Python/JavaScript rules](analysis-rules.md#python-and-javascript-syntax-tree-boundary), [parser dependencies](dependencies.md#production-go-dependencies) | [`shell.go`](../internal/analyze/shell.go), [`treesitter.go`](../internal/analyze/treesitter.go), adjacent tests, [`verify-parser-footprint.sh`](../scripts/verify-parser-footprint.sh), [`verify-parser-oracles.sh`](../scripts/verify-parser-oracles.sh) |
+| QML command extraction and literal flow | [QML rules](analysis-rules.md#qml-process-extraction), [ADR 0019](decisions/0019-bounded-qml-literal-flow.md) | [`qml.go`](../internal/analyze/qml.go), [`qml_flow.go`](../internal/analyze/qml_flow.go), adjacent tests |
+| Desktop, systemd, and Hyprland configuration | [ADRs 0011–0013](decisions/README.md), matching sections in the [rule catalogue](analysis-rules.md) | [`desktop.go`](../internal/analyze/desktop.go), [`systemd.go`](../internal/analyze/systemd.go), [`hyprland.go`](../internal/analyze/hyprland.go), adjacent tests |
+| Correlations and indirect reachability | [ADR 0008](decisions/0008-correlation-engine.md), [ADR 0014](decisions/0014-indirect-script-reachability.md) | [`correlations.go`](../internal/analyze/correlations.go), [`installed_artifacts.go`](../internal/analyze/installed_artifacts.go), [`reachability.go`](../internal/analyze/reachability.go), adjacent tests |
+| Archive and ELF readers | [ADR 0015](decisions/0015-archive-metadata-inventory.md), [ADR 0016](decisions/0016-bounded-elf-metadata.md) | [`inventory.go`](../internal/inventory/inventory.go), [`binary.go`](../internal/analyze/binary.go), adjacent tests |
+| Facts, inferences, unknowns, provenance, and summary wording | [ADRs 0009, 0010, and 0018](decisions/README.md), [report contract](report-contract.md), [severity model](severity-model.md) | [`internal/report/`](../internal/report), provenance and scenario tests in [`internal/analyze/`](../internal/analyze) |
+| Optional Omarchy audit comparison | [ADR 0017](decisions/0017-optional-omarchy-audit-evidence.md), [rule catalogue](analysis-rules.md#optional-omarchy-audit-evidence) | [`omarchy_audit.go`](../internal/analyze/omarchy_audit.go), adjacent tests |
+
+Read the relevant rows above, the [deterministic rule playbook](detection-rules.md),
+and the source and tests they link. A reviewer may split the work into recorded
+subsections, but the final Track B conclusion must state which rows were
+actually covered.
+
+### What to confirm
 
 Confirm:
 
@@ -76,9 +123,33 @@ Confirm:
 - positive, negative, legitimate, false-positive, hostile, race, deterministic,
   and fuzz cases cover each rule family.
 
-Run `go test -race ./internal/analyze`, both parser-oracle/footprint scripts, and
-reviewed fuzz campaigns. Independently inspect representative benign and
-hostile fixtures as bytes only.
+### Minimum reproducible checks
+
+From a clean checkout of the commit being reviewed, run:
+
+```bash
+export GOFLAGS='-tags=grammar_subset,grammar_subset_python,grammar_subset_javascript'
+go mod verify
+scripts/verify-production-dependencies.sh
+go test -race ./internal/analyze
+scripts/verify-parser-footprint.sh
+scripts/verify-parser-oracles.sh
+```
+
+Run reviewed fuzz campaigns separately and record each target, duration, and
+result. The [development guide](development.md#headless-checks) gives a safe
+example. Independently inspect representative benign and hostile fixtures as
+bytes only. Do not invoke fixture paths with a shell, language runtime, archive
+extractor, desktop/systemd/Hyprland loader, QML engine, or ELF loader.
+
+The parser-oracle script is a narrow exception only for the trusted synthetic
+Python and JavaScript samples created inside that script. Verify this property
+before running it; target or fixture bytes must never enter those runtimes.
+
+Record findings and the track-limited conclusion with the
+[review evidence template](review-evidence/TEMPLATE.md). “Approve” means only
+that the named Track B boundaries were reviewed at the recorded commit; it is
+not a claim that the product or a plugin is safe.
 
 ## Track C: schema, evidence graph, broker, and hostile rendering
 

@@ -1,5 +1,42 @@
 # Contributing
 
+Thanks for taking a look. You do not need to understand the entire scanner to
+help. Useful contributions include improving an explanation, adding a benign
+false-positive case, checking one documented boundary, reproducing a public
+bug with synthetic data, or reviewing a focused pull request.
+
+If you are here to perform an independent security review, start with the
+[review tracks](README.md#independent-reviewers-wanted) and
+[human review guide](docs/human-review-guide.md). For parser and correlation
+review issue #17, the [parser boundary map](docs/parser-boundaries.md) explains
+the terminology and points to the exact decisions, code, tests, limits, and
+dependency origin.
+
+This project is pre-release. Before proposing a change, check the
+[roadmap](docs/roadmap.md) and existing issues so that you can tell whether the
+behavior is unfinished, deliberately excluded, or an unexpected bug. It is
+fine to ask for clarification; a confusing boundary is itself useful feedback.
+
+## Make issues self-contained
+
+A reader should not have to search the repository to understand an issue. When
+opening or updating one:
+
+- link every named ADR, document section, implementation directory, test
+  script, parent issue, and focused pull request;
+- explain specialist terms in one sentence before asking someone to review
+  them;
+- use a commit permalink for security-review material so the linked content
+  cannot change underneath the reviewer; and
+- state the expected evidence, safe commands, guardrail, and definition of
+  completion in the issue itself.
+
+A path such as `docs/human-review-guide.md` or a label such as “ADR 0002” is not
+enough on its own in a GitHub issue. It must be a direct link to the relevant
+file or section.
+
+## Before changing code
+
 Start with `AGENTS.md`, `docs/architecture.md`, `docs/threat-model.md`, and the
 [development guide](docs/development.md). Parser or dependency work must also
 follow the [dependency audit and release procedure](docs/dependencies.md).
@@ -19,6 +56,8 @@ the product's behavior.
 Do not commit credentials, private plugin source, copied personal configuration,
 or hostile fixtures whose ordinary execution could harm a contributor's system.
 
+## Fixture safety
+
 Static behavior scenarios live under `internal/analyze/testdata`. Fixture scripts
 must be mode `0644` (never executable), carry an obvious warning when their text
 would be dangerous if run, and be loaded only through the byte-reading test
@@ -26,6 +65,8 @@ helper in `scenarios_test.go`. Add a benign or legitimate counterpart whenever a
 new scenario could otherwise encourage keyword-only detection. Never invoke a
 fixture through `sh`, a language runtime, `go generate`, a test subprocess, or a
 package/install hook.
+
+## Checks
 
 Run the deterministic checks with:
 

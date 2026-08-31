@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Start with `docs/detection-rules.md`. Proposals must distinguish observable facts, supported inference, and unknown behavior; keyword-only warnings are not accepted.
+        Start with the [deterministic detection-rule guide](https://github.com/SurreptitiousFabric/plug-and-prejudice/blob/main/docs/detection-rules.md). Proposals must distinguish observable facts, supported inference, and unknown behavior; keyword-only warnings are not accepted. Link every ADR, rule section, implementation area, test, issue, or pull request you name so a reader never has to search for it.
   - type: textarea
     id: observable
     attributes:
@@ -39,6 +39,17 @@ body:
     attributes:
       label: Unknowns and analysis limits
       description: State what cannot be safely resolved and when the report should become incomplete.
+    validations:
+      required: true
+  - type: textarea
+    id: links
+    attributes:
+      label: Direct links
+      description: Link every ADR, rule section, implementation area, test, issue, or pull request you name. Use commit permalinks when the exact revision matters.
+      placeholder: |
+        - Rule and decision records: https://github.com/...
+        - Implementation and tests: https://github.com/...
+        - Related issues or pull requests: https://github.com/...
     validations:
       required: true
   - type: checkboxes

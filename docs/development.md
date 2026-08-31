@@ -4,6 +4,27 @@ This repository inspects hostile code. Development commands must preserve the
 same central rule as production: target bytes are data and are never sourced,
 imported, evaluated, or invoked.
 
+## Platform matrix
+
+CPU architecture and operating system are separate requirements. The supported
+version-one product combinations are Arch Linux `x86_64` (called `amd64` by Go)
+and Arch Linux `aarch64` (called `arm64` by Go). The CI workflow also runs
+native Ubuntu 24.04 jobs on both CPU architectures so architecture-specific Go
+or build failures are visible before the final Arch package runs.
+
+| Work | x86-64 Linux | ARM64 Linux | macOS or Windows |
+|---|---|---|---|
+| Read documentation, code, reports, and retained evidence | Yes | Yes | Yes |
+| Track B `internal/analyze` tests | Supported and run in CI | Supported and run in CI | Not a release platform; individual Go tests may work, but the documented script set is not guaranteed |
+| Full repository tests and Linux containment review | Supported when the documented kernel/systemd/Bubblewrap prerequisites exist | Supported when the documented kernel/systemd/Bubblewrap prerequisites exist | No; use a Linux machine or VM, and record its exact environment |
+| Native Arch package/lifecycle evidence | Required before release | Required before release | No |
+| Installed Omarchy UI/accessibility review | Requires a supported Omarchy session | Requires a supported Omarchy session | No |
+
+“x86” in release discussion means **x86-64**, not the older 32-bit x86
+architecture. Cross-compiling proves that source can produce another
+architecture's bytes; it does not replace running tests and package lifecycle
+checks natively on that architecture.
+
 ## Component map
 
 | Path | Responsibility | Trust boundary |
@@ -11,7 +32,7 @@ imported, evaluated, or invoked.
 | `cmd/plug-prejudice` | Inventory, deterministic analysis, versioned JSON production | Runs inside containment in the installed product; never launches target code |
 | `cmd/plug-prejudice-broker` | Installed-plugin selection, resource scope, Bubblewrap, strict report validation | Trusted user-session boundary with fixed executable policy |
 | `internal/inventory` | Descriptor-relative bounded traversal and non-executing ELF metadata | Treats every filename and byte as hostile |
-| `internal/analyze` | Shell AST and bounded QML lexical facts, correlations, limitations | Parses data only; unsupported semantics remain unknown |
+| `internal/analyze` | Shell/Python/JavaScript syntax, bounded QML/desktop/systemd/Hyprland parsing, correlations, and limitations | Parses data only; unsupported semantics remain unknown |
 | `internal/report` | Schema types and strict relationship/path/cardinality validation | Rejects output before presentation |
 | `internal/resource` | Verified transient systemd user scope and process rlimits | Must fail closed |
 | `internal/sandbox` | Pinned scanner/target descriptors and fixed Bubblewrap arguments | Must fail closed |
@@ -24,6 +45,10 @@ passing does not override an invariant documented there.
 The [deterministic rule playbook](detection-rules.md) maps the analyzer stages,
 output types, evidence requirements, false-positive cases, and review gates for
 adding detection behavior.
+The [parser boundary map](parser-boundaries.md) explains which files enter each
+parser, which syntax and claims are supported, how failures become unknown, and
+where a reviewer can find the corresponding code, tests, limits, and dependency
+origin.
 
 ## Headless checks
 

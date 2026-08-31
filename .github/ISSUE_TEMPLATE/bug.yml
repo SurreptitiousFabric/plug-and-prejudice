@@ -38,6 +38,17 @@ body:
       description: Include bounded report excerpts, file/line evidence, and known unknowns. Remove unrelated personal paths or data.
     validations:
       required: false
+  - type: textarea
+    id: links
+    attributes:
+      label: Direct links
+      description: Link every ADR, documentation section, code area, test, issue, or pull request you name. Use commit permalinks when the exact revision matters; write "None known" if there are no related artifacts.
+      placeholder: |
+        - Relevant rule or document section: https://github.com/...
+        - Relevant code or test: https://github.com/...
+        - Related issue or pull request: https://github.com/...
+    validations:
+      required: true
   - type: checkboxes
     id: safety
     attributes:

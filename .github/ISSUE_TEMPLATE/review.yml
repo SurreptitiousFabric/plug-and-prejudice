@@ -1,0 +1,65 @@
+name: Independent security review
+description: Define a self-contained, commit-bound review track or subsection.
+title: "review: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Make this issue a complete review packet. Link directly to every named decision, document section, code area, test, dependency record, parent issue, and pull request. Pin security-review links to the commit being reviewed so the material cannot change underneath the reviewer.
+  - type: input
+    id: revision
+    attributes:
+      label: Candidate commit
+      description: Full commit SHA that the evidence and conclusion will cover.
+      placeholder: 40-character Git commit SHA
+    validations:
+      required: true
+  - type: textarea
+    id: purpose
+    attributes:
+      label: Plain-English purpose
+      description: Explain the boundary or behavior being reviewed in language a new contributor can understand.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Review scope and direct links
+      description: Link each in-scope ADR, exact documentation section, code directory or file, test, dependency record, issue, and pull request. Explain what the reviewer should check at each link.
+      placeholder: |
+        - [Boundary definition](https://github.com/.../blob/FULL_SHA/docs/...#section) — confirm ...
+        - [Decision record](https://github.com/.../blob/FULL_SHA/docs/decisions/...) — challenge ...
+        - [Implementation](https://github.com/.../tree/FULL_SHA/internal/...) — trace ...
+        - [Tests](https://github.com/.../blob/FULL_SHA/internal/..._test.go) — reproduce ...
+    validations:
+      required: true
+  - type: textarea
+    id: checks
+    attributes:
+      label: Safe, reproducible checks
+      description: Provide bounded commands and prerequisites. Never ask a reviewer to execute, source, import, or evaluate target-plugin content.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Required evidence
+      description: State what logs, environment details, revisions, findings, unknowns, and limitations the reviewer must record.
+    validations:
+      required: true
+  - type: textarea
+    id: guardrail
+    attributes:
+      label: Guardrail
+      description: State the trust-boundary rule this review must not violate.
+      value: Never execute, source, import, or evaluate target-plugin content; inspect it only as hostile data through the documented boundary.
+    validations:
+      required: true
+  - type: textarea
+    id: completion
+    attributes:
+      label: Completion and conclusion
+      description: Define the track-limited approve/reject criteria and require the conclusion to name the reviewed commit.
+    validations:
+      required: true
