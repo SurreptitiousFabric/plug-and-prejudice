@@ -36,7 +36,8 @@ func analyzeQML(name string, data []byte, result *Result) {
 				ID:       fmt.Sprintf("op-%s-%d-%d", stablePathID(name), line, len(result.Operations)+1),
 				Category: "process-execution", Command: command, Arguments: arguments,
 				Dynamic: dynamic, Confidence: report.ConfidenceHigh,
-				Evidence: report.Evidence{Path: name, LineStart: line, LineEnd: lineAt(data, expression.end), Operation: strings.TrimSpace(expression.text), Excerpt: sourceLine(data, line)},
+				Evidence:   report.Evidence{Path: name, LineStart: line, LineEnd: lineAt(data, expression.end), Operation: strings.TrimSpace(expression.text), Excerpt: sourceLine(data, line)},
+				Provenance: sourceProvenance("qml-operation-extraction/v1"),
 			}
 			if command == "" {
 				op.Command = "<dynamic>"
@@ -102,7 +103,7 @@ func classifyQMLShell(op report.Operation, result *Result) {
 	result.Findings = append(result.Findings, report.Finding{
 		ID: "finding-qml-shell-" + op.ID, Claim: report.ClaimFact, Severity: severity,
 		Confidence: op.Confidence, Category: category, Title: title, Explanation: explanation,
-		Evidence: []report.Evidence{op.Evidence}, Related: []string{op.ID}, Provenance: "deterministic:qml-lexical+shell-ast",
+		Evidence: []report.Evidence{op.Evidence}, Related: []string{op.ID}, Provenance: sourceProvenance("qml-lexical-shell-ast/v1"),
 	})
 }
 

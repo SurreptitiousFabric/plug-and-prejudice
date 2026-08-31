@@ -33,6 +33,16 @@ func annotateScopes(contents map[string][]byte, files []report.File, result *Res
 			finding.Scope = report.ScopeUnknown
 		}
 	}
+	for index := range result.Unknowns {
+		unknown := &result.Unknowns[index]
+		if len(unknown.AffectedOperations) > 0 {
+			unknown.Scope = relatedScope(unknown.AffectedOperations, operationScopes)
+		} else if len(unknown.Evidence) > 0 {
+			unknown.Scope = scopeForPath(unknown.Evidence[0].Path, runtimeReferences)
+		} else {
+			unknown.Scope = report.ScopeUnknown
+		}
+	}
 	for index := range result.Limitations {
 		limitation := &result.Limitations[index]
 		if limitation.Scope == "" && limitation.Path != "" {

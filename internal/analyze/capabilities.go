@@ -86,7 +86,7 @@ func addPathResource(result *Result, seen map[string]bool, operation report.Oper
 			Claim: report.ClaimFact, Severity: report.SeverityHigh, Confidence: operation.Confidence,
 			Category: "credential-access", Title: "Accesses a credential-related path",
 			Explanation: fmt.Sprintf("The operation attempts to %s %s, a path commonly associated with credentials, authentication material, or browser identity data. Static analysis does not establish whether the path exists or whether access succeeds.", access, value),
-			Evidence:    []report.Evidence{operation.Evidence}, Related: []string{operation.ID}, Provenance: "deterministic:command-capability",
+			Evidence:    []report.Evidence{operation.Evidence}, Related: []string{operation.ID}, Provenance: sourceProvenance("command-capability/v1"),
 		})
 	}
 	if access != "read" && persistencePath(value) {
@@ -104,6 +104,7 @@ func addResource(result *Result, seen map[string]bool, operation report.Operatio
 		ID:   "resource-" + operation.ID + "-" + stablePathID(kind+"-"+access+"-"+value),
 		Kind: kind, Access: access, Value: value, Sensitive: sensitive, Dynamic: dynamic,
 		Confidence: operation.Confidence, Evidence: operation.Evidence, RelatedOperationID: operation.ID,
+		Provenance: sourceProvenance("command-capability/v1"),
 	})
 	return true
 }
@@ -115,7 +116,7 @@ func addPersistence(result *Result, seen map[string]bool, operation report.Opera
 		Claim: report.ClaimFact, Severity: report.SeverityMedium, Confidence: operation.Confidence,
 		Category: "persistence", Title: "Configures a persistence mechanism",
 		Explanation: "The operation modifies " + mechanism + ", which can cause code or services to run again after the immediate plugin interaction or in future sessions.",
-		Evidence:    []report.Evidence{operation.Evidence}, Related: []string{operation.ID}, Provenance: "deterministic:command-capability",
+		Evidence:    []report.Evidence{operation.Evidence}, Related: []string{operation.ID}, Provenance: sourceProvenance("command-capability/v1"),
 	})
 }
 
@@ -137,7 +138,7 @@ func addDestructiveFinding(result *Result, operation report.Operation, operands 
 		ID: "finding-delete-" + operation.ID, Claim: report.ClaimFact, Severity: severity,
 		Confidence: operation.Confidence, Category: "destructive-operation", Title: "Deletes filesystem content",
 		Explanation: "The command deletes " + strings.Join(operands, ", ") + ". Severity reflects the visible targets, recursive flags, and whether arguments are dynamic; static analysis cannot prove the paths present at runtime.",
-		Evidence:    []report.Evidence{operation.Evidence}, Related: []string{operation.ID}, Provenance: "deterministic:command-capability",
+		Evidence:    []report.Evidence{operation.Evidence}, Related: []string{operation.ID}, Provenance: sourceProvenance("command-capability/v1"),
 	})
 }
 

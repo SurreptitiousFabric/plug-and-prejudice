@@ -8,6 +8,42 @@ import (
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
 )
 
+// AssignCoverageDispositions attaches the schema-2 authoritative coverage unit
+// to each retained inventory record. It does not change detection results.
+// Later language/artifact stacks extend the recognized classes, while this
+// adapter conservatively describes the analyzers present in stack 2.
+func AssignCoverageDispositions(files []report.File, contents map[string][]byte, limitations []report.Limitation, scanErrors []report.ScanError) ([]report.File, report.CoverageSummary) {
+	result := append([]report.File(nil), files...)
+	limited, failed := map[string]bool{}, map[string]bool{}
+	for _, limitation := range limitations {
+		if limitation.Path != "" {
+			limited[limitation.Path] = true
+		}
+	}
+	for _, scanError := range scanErrors {
+		if scanError.Path != "" {
+			failed[scanError.Path] = true
+		}
+	}
+	for index := range result {
+		file := &result[index]
+		file.Analysis, file.AnalysisReason = report.AnalysisNotApplicable, "not a retained artifact class with semantic behavior analysis"
+		if file.Kind != "regular" || !coverageRelevant(*file, contents[file.Path]) {
+			continue
+		}
+		if failed[file.Path] || !file.Inspected {
+			file.Analysis, file.AnalysisReason = report.AnalysisUnanalyzed, "content was not retained for analysis"
+		} else if unsupportedLanguage(file.Path, contents[file.Path]) != "" {
+			file.Analysis, file.AnalysisReason = report.AnalysisUnanalyzed, "the retained source language has no semantic analyzer in this stack"
+		} else if file.Binary != nil || limited[file.Path] {
+			file.Analysis, file.AnalysisReason = report.AnalysisPartial, "retained metadata or an explicit limitation leaves behavior unresolved"
+		} else {
+			file.Analysis, file.AnalysisReason = report.AnalysisAnalyzed, ""
+		}
+	}
+	return result, coverageFromFiles(result)
+}
+
 func addLanguageCoverageLimitations(contents map[string][]byte, result *Result) {
 	references := runtimeReferencedPaths(contents, nil, result.Manifest)
 	paths := make([]string, 0, len(contents))
@@ -23,10 +59,7 @@ func addLanguageCoverageLimitations(contents map[string][]byte, result *Result) 
 		if language == "" {
 			continue
 		}
-		code := language + "-semantic-analysis-unavailable"
-		description := coverageDescription(language)
-		scope := scopeForPath(name, references)
-		result.Limitations = append(result.Limitations, report.Limitation{Code: code, Description: description, Path: name, Scope: scope})
+		result.Limitations = append(result.Limitations, report.Limitation{Code: language + "-semantic-analysis-unavailable", Description: coverageDescription(language), Path: name, Scope: scopeForPath(name, references)})
 	}
 }
 
@@ -71,4 +104,28 @@ func unsupportedLanguage(name string, data []byte) string {
 func coverageDescription(language string) string {
 	label := strings.ToUpper(language[:1]) + language[1:]
 	return label + " source was inventoried but has not received syntax-tree semantic analysis. Calls, dependencies, and data flow may be missing."
+}
+
+func coverageRelevant(file report.File, data []byte) bool {
+	if file.Path == "manifest.json" || file.Binary != nil || file.ContentType == "application/x-elf" || strings.EqualFold(filepath.Ext(file.Path), ".qml") {
+		return true
+	}
+	return isShell(file.Path, data) || unsupportedLanguage(file.Path, data) != ""
+}
+
+func coverageFromFiles(files []report.File) report.CoverageSummary {
+	var analyzed, partial, unanalyzed, excluded int
+	for _, file := range files {
+		switch file.Analysis {
+		case report.AnalysisAnalyzed:
+			analyzed++
+		case report.AnalysisPartial:
+			partial++
+		case report.AnalysisUnanalyzed:
+			unanalyzed++
+		case report.AnalysisNotApplicable:
+			excluded++
+		}
+	}
+	return report.NewCoverageSummary(analyzed, partial, unanalyzed, excluded)
 }

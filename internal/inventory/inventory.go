@@ -52,7 +52,6 @@ type Result struct {
 type walker struct {
 	limits Limits
 	result Result
-	digest hashWriter
 	hook   func(event, filePath string)
 	seen   map[string]observation
 }
@@ -66,22 +65,6 @@ type observation struct {
 }
 
 var ErrTargetChanged = errors.New("target changed during scan")
-
-type hashWriter struct{ parts [][]byte }
-
-func (h *hashWriter) add(values ...string) {
-	for _, value := range values {
-		h.parts = append(h.parts, []byte(value), []byte{0})
-	}
-}
-
-func (h *hashWriter) sum() string {
-	s := sha256.New()
-	for _, part := range h.parts {
-		_, _ = s.Write(part)
-	}
-	return hex.EncodeToString(s.Sum(nil))
-}
 
 func Scan(target string, limits Limits) (Result, error) {
 	return scan(target, limits, nil)
@@ -116,10 +99,10 @@ func scan(target string, limits Limits, hook func(event, filePath string)) (Resu
 		return Result{}, err
 	}
 	sort.Slice(w.result.Files, func(i, j int) bool { return w.result.Files[i].Path < w.result.Files[j].Path })
-	for _, file := range w.result.Files {
-		w.digest.add(file.Path, file.Kind, file.Mode, fmt.Sprint(file.Size), file.SHA256, file.LinkTarget, file.SkipReason)
+	w.result.RootDigest, err = report.InventoryRootDigest(w.result.Files)
+	if err != nil {
+		return Result{}, fmt.Errorf("compute target inventory root digest: %w", err)
 	}
-	w.result.RootDigest = w.digest.sum()
 	return w.result, nil
 }
 
