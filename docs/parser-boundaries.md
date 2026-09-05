@@ -58,7 +58,12 @@ list is treated as a possible process launch:
   `child_process.execFile`, `child_process.execFileSync`, and
   `child_process.fork`.
 
-A direct literal string or literal string array can become a process operation.
+A direct Python literal string or literal string array can become a process
+operation. JavaScript requires a string executable and a complete string array
+when arguments are present; omitted arguments and empty arrays are supported.
+Unresolved arguments and unsupported options/callback overloads retain a
+call-linked unknown and suppress the derived process operation. See the
+[literal-argument contract](analysis-rules.md#python-and-javascript-syntax-tree-boundary).
 A unique module-level literal assignment may be followed for at most 16
 references through at most 1,024 retained definitions. Duplicate definitions,
 branch-local definitions, cycles, computed values, unsupported literal forms,

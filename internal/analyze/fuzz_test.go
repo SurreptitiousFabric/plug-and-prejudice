@@ -69,7 +69,12 @@ func FuzzPythonTreeSitterAnalyzerNeverPanics(f *testing.F) {
 }
 
 func FuzzJavaScriptTreeSitterAnalyzerNeverPanics(f *testing.F) {
-	for _, seed := range [][]byte{[]byte("print('ok');\n"), []byte("function broken( {\n"), []byte("// call()\nconst x = 'call()';\n")} {
+	for _, seed := range [][]byte{
+		[]byte("print('ok');\n"), []byte("function broken( {\n"), []byte("// call()\nconst x = 'call()';\n"),
+		[]byte(`child_process.spawn("curl", buildArguments());`),
+		[]byte(`const runtimeURL = loadURL(); child_process.spawn("curl", ["--url", runtimeURL]);`),
+		[]byte(`child_process.execFile("tool", [], {shell: true}, () => {});`),
+	} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
