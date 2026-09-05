@@ -103,7 +103,7 @@ func analyzeTreeSitter(name string, data []byte, language string, result *Result
 			Provenance: sourceProvenance(language + "-call-extraction/v1"),
 		}
 		callNode := callNodes[treeSitterNodeKey(call.StartByte, call.EndByte)]
-		argument := firstTreeSitterArgument(callNode, grammar)
+		argument := firstTreeSitterArgument(callNode, grammar, language)
 		isExecution := isTreeSitterExecutionAPI(language, command)
 		var processValues []string
 		var processOrigins []report.ValueOrigin
@@ -249,19 +249,19 @@ func resolveTreeSitterProcessValues(language string, call, argument *gotreesitte
 		return values, origins, argument, ok
 	}
 	arguments := call.ChildByFieldName("arguments", grammar)
-	if arguments == nil || arguments.NamedChildCount() < 2 {
+	extraArgument := javaScriptArgument(arguments, grammar, 1)
+	if extraArgument == nil {
 		return values, origins, nil, true
 	}
-	extraArgument := arguments.NamedChild(1)
 	extra, extraOrigins, extraOK := resolveTreeSitterLiteral(extraArgument, grammar, assignments, data, extraArgument.StartByte(), make(map[string]bool), 0, "array")
 	if !extraOK {
 		// Knowing the executable does not establish the complete argument list.
 		return nil, nil, extraArgument, false
 	}
-	if arguments.NamedChildCount() > 2 {
+	if additionalArgument := javaScriptArgument(arguments, grammar, 2); additionalArgument != nil {
 		// Options/callback overloads can change process semantics. Keep them
 		// explicitly unknown rather than interpreting or silently ignoring them.
-		return nil, nil, arguments.NamedChild(2), false
+		return nil, nil, additionalArgument, false
 	}
 	return append(values, extra...), append(origins, extraOrigins...), nil, true
 }
@@ -284,23 +284,45 @@ func resolveTreeSitterLiteral(node *gotreesitter.Node, grammar *gotreesitter.Lan
 			return nil, nil, false
 		}
 		partType := ""
+		valueCount := node.NamedChildCount()
 		if literalType == "array" {
 			partType = "string"
+			valueCount = 0
 			// Named children omit holes. Do not mistake a sparse array for
 			// a complete list; a single trailing comma is harmless syntax.
 			expectValue := true
 			for index := 1; index < node.ChildCount()-1; index++ {
-				comma := node.Child(index).Type(grammar) == ","
+				child := node.Child(index)
+				if child.Type(grammar) == "comment" {
+					continue
+				}
+				comma := child.Type(grammar) == ","
 				if comma == expectValue {
 					return nil, nil, false
+				}
+				if !comma {
+					valueCount++
 				}
 				expectValue = comma
 			}
 		}
-		values := make([]string, 0, node.NamedChildCount())
+		values := make([]string, 0, valueCount)
 		origins := make([]report.ValueOrigin, 0)
-		for index := 0; index < node.NamedChildCount(); index++ {
-			part, partOrigins, ok := resolveTreeSitterLiteral(node.NamedChild(index), grammar, assignments, data, before, seen, depth+1, partType)
+		firstChild, childLimit := 0, node.NamedChildCount()
+		if literalType == "array" {
+			firstChild, childLimit = 1, node.ChildCount()-1
+		}
+		for index := firstChild; index < childLimit; index++ {
+			var child *gotreesitter.Node
+			if literalType == "array" {
+				child = node.Child(index)
+				if child.Type(grammar) == "comment" || child.Type(grammar) == "," {
+					continue
+				}
+			} else {
+				child = node.NamedChild(index)
+			}
+			part, partOrigins, ok := resolveTreeSitterLiteral(child, grammar, assignments, data, before, seen, depth+1, partType)
 			if !ok || len(part) != 1 {
 				return nil, nil, false
 			}
@@ -353,15 +375,39 @@ func decodeSimpleQuotedLiteral(value string) (string, bool) {
 	return inner, true
 }
 
-func firstTreeSitterArgument(call *gotreesitter.Node, grammar *gotreesitter.Language) *gotreesitter.Node {
+func firstTreeSitterArgument(call *gotreesitter.Node, grammar *gotreesitter.Language, language string) *gotreesitter.Node {
 	if call == nil {
 		return nil
 	}
 	arguments := call.ChildByFieldName("arguments", grammar)
+	if language == "javascript" {
+		return javaScriptArgument(arguments, grammar, 0)
+	}
 	if arguments == nil || arguments.NamedChildCount() == 0 {
 		return nil
 	}
 	return arguments.NamedChild(0)
+}
+
+// The pinned JavaScript grammar includes comments among named children.
+// Select semantic arguments without allocating a filtered list or dropping
+// other node types, including spreads and unsupported overload arguments.
+// Indexed children avoid the pinned runtime's repeated named-child scans.
+func javaScriptArgument(arguments *gotreesitter.Node, grammar *gotreesitter.Language, position int) *gotreesitter.Node {
+	if arguments == nil {
+		return nil
+	}
+	for index := 1; index < arguments.ChildCount()-1; index++ {
+		child := arguments.Child(index)
+		if child.Type(grammar) == "comment" || child.Type(grammar) == "," {
+			continue
+		}
+		if position == 0 {
+			return child
+		}
+		position--
+	}
+	return nil
 }
 
 func isTreeSitterExecutionAPI(language, command string) bool {

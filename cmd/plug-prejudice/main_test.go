@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -157,12 +158,16 @@ func TestScannerProducerEmitsIndependentlyDecodableSchemaTwoReport(t *testing.T)
 
 func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
 	for _, test := range []struct {
-		name, expression string
-		unknown          bool
+		name, expression, suffix string
+		unknown                  bool
+		wantArguments            []string
 	}{
-		{"computed-list", "buildArguments()", true},
-		{"partial-array", `["--url", runtimeURL]`, true},
-		{"empty-control", "[]", false},
+		{"computed-list", "buildArguments()", "", true, nil},
+		{"partial-array", `["--url", runtimeURL]`, "", true, nil},
+		{"empty-control", "[]", "", false, nil},
+		{"literal-trailing-comment", `["https://example.test"]`, " /* note */", false, []string{"https://example.test"}},
+		{"computed-trailing-comment", "buildArguments()", " /* note */", true, nil},
+		{"partial-array-comments", `[/* before */ "--url", runtimeURL /* after */]`, " /* note */", true, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			target := t.TempDir()
@@ -170,7 +175,7 @@ func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
 			// non-executable data read through the existing test arrangement.
 			contents := map[string][]byte{
 				"manifest.json": []byte(`{"schemaVersion":1,"id":"example.arguments","name":"Arguments","version":"1.0.0","kinds":["service"],"entryPoints":{"service":"helper.js"}}`),
-				"helper.js":     []byte("child_process.spawn('printf', ['ok']);\nchild_process.spawn('curl', " + test.expression + ");\n"),
+				"helper.js":     []byte("child_process.spawn('printf', ['ok']);\nchild_process.spawn('curl', " + test.expression + test.suffix + ");\n"),
 			}
 			for name, data := range contents {
 				if err := os.WriteFile(filepath.Join(target, name), data, 0o600); err != nil {
@@ -203,6 +208,20 @@ func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
 			if !test.unknown {
 				if decoded.Status != report.StatusComplete || len(decoded.Unknowns) != 0 || decoded.Review.UnknownBehavior.Unknowns != 0 {
 					t.Fatalf("literal control report is incomplete: %#v", decoded)
+				}
+				var process report.Operation
+				for _, op := range decoded.Operations {
+					if op.Category == "process-execution-via-javascript" && op.Command == "curl" {
+						process = op
+					}
+				}
+				if process.ID == "" || process.Dynamic || process.Confidence != report.ConfidenceHigh || !reflect.DeepEqual(process.Arguments, test.wantArguments) {
+					t.Fatalf("literal producer lost process evidence: %#v", process)
+				}
+				if len(test.wantArguments) > 0 {
+					if len(decoded.Resources) != 1 || decoded.Resources[0].Kind != "network-domain" || decoded.Resources[0].Value != "example.test" || decoded.Resources[0].RelatedOperationID != process.ID {
+						t.Fatalf("literal producer lost linked network evidence: %#v", decoded.Resources)
+					}
 				}
 				return
 			}

@@ -387,6 +387,13 @@ operations feed the ordinary command capability and correlation stages. An
 informational flow fact cites the assignment and call whenever an assignment
 was followed.
 
+Ordinary parsed JavaScript block and line comments at call-argument or
+array-element boundaries are trivia: they do not occupy an argument position
+or change literal values. Commas and array holes remain significant, and
+comment-looking text inside strings remains part of those values. Comments
+never turn an unresolved value or an options/callback overload into resolved
+arguments; source evidence retains its original text and offsets.
+
 A known JavaScript executable does not establish complete arguments. An
 unresolved argument expression or array element retains the neutral call with
 an argument-specific unknown, citing that expression and bounded available
