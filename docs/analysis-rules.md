@@ -432,6 +432,33 @@ Python literal-array resolution. This slice does not establish general shadowing
 completeness, loops, exception flow, destructuring, augmented assignments,
 mutable-container aliases or interprocedural semantics.
 
+For direct process calls in ordinary module-level Python `def` functions and
+JavaScript named function declarations, simple identifier parameters prevent
+same-named module-literal substitution. The neutral call and bounded use-site
+unknown remain; unrelated module assignments are not parameter origins, and
+no caller value or runtime reachability is inferred. The guard follows each
+identifier occurrence, so a referenced module definition's right-hand side
+retains its module context. Sibling functions, module calls and unrelated
+parameter names do not invalidate supported literals. Parsed comments do not
+occupy parameter positions. Recognized exports of ordinary named JavaScript
+functions, including named default exports, retain this context. Precise name
+comparison is limited to parsed unescaped ASCII identifiers (including JavaScript
+`$`, and the language's underscore/digit rules). Unsupported parameter spelling
+makes identifier identity incomplete throughout the covered function context;
+unsupported identifier uses cannot establish absence of a binding. This yields
+unresolved-flow uncertainty, not a budget-exhaustion claim. Literal-only values
+and unaffected module/sibling contexts remain available. Unicode text in strings
+or comments does not affect this boundary. No normalization is attempted.
+Parameter contexts share a per-file 1,024-name and 100,000-header-child-step
+budget; incomplete context prevents identifier substitution at affected calls
+and produces call-linked budget uncertainty. This is not general local-binding
+resolution: nested functions, methods/classes, lambdas/arrows/function
+expressions, async/generators, defaults/rest/destructured/annotated parameters,
+parameter reassignment, global/nonlocal and caller analysis remain excluded.
+The guard may conservatively withhold module-derived evidence in Python generator
+bodies and parameter-reassignment cases; this does not resolve reassigned values
+or model generator execution. Independent literals remain available.
+
 ## Optional Omarchy audit evidence
 
 An explicitly supplied, pinned PR #8439 JSON report is decoded under ADR 0017.
