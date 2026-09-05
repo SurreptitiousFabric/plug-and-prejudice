@@ -416,6 +416,22 @@ does not claim import resolution,
 dynamic-property resolution, branch-sensitive data flow, or equivalence to
 language execution semantics.
 
+A preceding simple identifier reassignment through module-level `if`/`else`
+bodies (including Python `elif`) invalidates literal substitution; no branch
+condition or replacement value is selected. Unrelated names, later writes and
+separate function/class scopes do not invalidate that module definition.
+JavaScript block-local `let`/`const`, class and function declarations guard
+against treating their local writes as module writes, without resolving calls
+inside local scopes or modelling legacy outer-binding declaration effects.
+Parentheses around a sole assignment identifier do not defeat invalidation;
+comma-bearing Python tuple targets remain excluded destructuring.
+For a Python literal list/tuple whose first element is a literal executable,
+unresolved later elements produce argument uncertainty, not executable
+uncertainty; leading comments do not change that wording. This does not expand
+Python literal-array resolution. This slice does not establish general shadowing, assignment-index
+completeness, loops, exception flow, destructuring, augmented assignments,
+mutable-container aliases or interprocedural semantics.
+
 ## Optional Omarchy audit evidence
 
 An explicitly supplied, pinned PR #8439 JSON report is decoded under ADR 0017.

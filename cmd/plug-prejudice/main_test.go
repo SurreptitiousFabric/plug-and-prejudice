@@ -158,16 +158,17 @@ func TestScannerProducerEmitsIndependentlyDecodableSchemaTwoReport(t *testing.T)
 
 func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
 	for _, test := range []struct {
-		name, expression, suffix string
-		unknown                  bool
-		wantArguments            []string
+		name, expression, suffix, prefix string
+		unknown                          bool
+		wantArguments                    []string
 	}{
-		{"computed-list", "buildArguments()", "", true, nil},
-		{"partial-array", `["--url", runtimeURL]`, "", true, nil},
-		{"empty-control", "[]", "", false, nil},
-		{"literal-trailing-comment", `["https://example.test"]`, " /* note */", false, []string{"https://example.test"}},
-		{"computed-trailing-comment", "buildArguments()", " /* note */", true, nil},
-		{"partial-array-comments", `[/* before */ "--url", runtimeURL /* after */]`, " /* note */", true, nil},
+		{"computed-list", "buildArguments()", "", "", true, nil},
+		{"partial-array", `["--url", runtimeURL]`, "", "", true, nil},
+		{"empty-control", "[]", "", "", false, nil},
+		{"literal-trailing-comment", `["https://example.test"]`, " /* note */", "", false, []string{"https://example.test"}},
+		{"computed-trailing-comment", "buildArguments()", " /* note */", "", true, nil},
+		{"partial-array-comments", `[/* before */ "--url", runtimeURL /* after */]`, " /* note */", "", true, nil},
+		{"conditional-arguments", "args", " /* after */", "let args = ['https://discarded.example.test'];\nif (enabled) { args = chooseArguments(); }\n", true, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			target := t.TempDir()
@@ -175,7 +176,7 @@ func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
 			// non-executable data read through the existing test arrangement.
 			contents := map[string][]byte{
 				"manifest.json": []byte(`{"schemaVersion":1,"id":"example.arguments","name":"Arguments","version":"1.0.0","kinds":["service"],"entryPoints":{"service":"helper.js"}}`),
-				"helper.js":     []byte("child_process.spawn('printf', ['ok']);\nchild_process.spawn('curl', " + test.expression + test.suffix + ");\n"),
+				"helper.js":     []byte("child_process.spawn('printf', ['ok']);\n" + test.prefix + "child_process.spawn('curl', " + test.expression + test.suffix + ");\n"),
 			}
 			for name, data := range contents {
 				if err := os.WriteFile(filepath.Join(target, name), data, 0o600); err != nil {
@@ -205,6 +206,15 @@ func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
 			if err != nil {
 				t.Fatalf("producer report rejected by independent decoder: %v", err)
 			}
+			var control report.Operation
+			for _, op := range decoded.Operations {
+				if op.Category == "process-execution-via-javascript" && op.Command == "printf" {
+					control = op
+				}
+			}
+			if control.ID == "" || control.Dynamic || control.Confidence != report.ConfidenceHigh || !reflect.DeepEqual(control.Arguments, []string{"ok"}) {
+				t.Fatalf("unaffected producer control lost static evidence: %#v", control)
+			}
 			if !test.unknown {
 				if decoded.Status != report.StatusComplete || len(decoded.Unknowns) != 0 || decoded.Review.UnknownBehavior.Unknowns != 0 {
 					t.Fatalf("literal control report is incomplete: %#v", decoded)
@@ -231,7 +241,7 @@ func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
 			unknown := decoded.Unknowns[0]
 			var affected report.Operation
 			for _, op := range decoded.Operations {
-				if op.Command == "child_process.spawn" && op.Evidence.LineStart == 2 {
+				if op.Command == "child_process.spawn" && op.Evidence.LineStart == 2+strings.Count(test.prefix, "\n") {
 					affected = op
 				}
 				if op.Category == "process-execution-via-javascript" && op.Command == "curl" {
@@ -252,6 +262,18 @@ func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
 			}
 			if !linked {
 				t.Fatalf("producer graph lacks argument unknown's exact call link: %#v", decoded.Relationships)
+			}
+			if test.prefix != "" {
+				if len(decoded.Resources) != 0 {
+					t.Fatalf("discarded conditional argument still supplies resources: %#v", decoded.Resources)
+				}
+				found := false
+				for _, origin := range unknown.Origins {
+					found = found || (origin.Kind == report.OriginAssignment && origin.Name == "args" && origin.Evidence.Operation == "args = chooseArguments()")
+				}
+				if !found {
+					t.Fatalf("producer lost conditional assignment origin: %#v", unknown.Origins)
+				}
 			}
 		})
 	}
