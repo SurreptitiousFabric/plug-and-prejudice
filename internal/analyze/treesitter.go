@@ -16,11 +16,13 @@ const treeSitterParseTimeoutMicros = 2_000_000
 const maxTreeSitterOriginNodes = 100_000
 
 type treeSitterAssignment struct {
-	name     string
-	offset   uint32
-	value    *gotreesitter.Node
-	topLevel bool
-	origin   report.ValueOrigin
+	name        string
+	offset      uint32
+	value       *gotreesitter.Node
+	topLevel    bool
+	conditional bool
+	localBlock  *gotreesitter.Node
+	origin      report.ValueOrigin
 }
 
 func treeSitterLanguage(name string, data []byte) string {
@@ -153,6 +155,12 @@ func analyzeTreeSitter(name string, data []byte, language string, result *Result
 				unknown.Title = "JavaScript process arguments are unresolved"
 				unknown.Description = "The executable value is statically resolved, but the argument list or remaining call form is outside the supported literal-argument boundary. Options and callback overloads are not analyzed. The cited assignment is the nearest preceding textual definition, not proof of runtime control flow."
 				unknown.Provenance = sourceProvenance("javascript-process-arguments-unknown/v1")
+			} else if language == "python" && treeSitterPythonLiteralExecutable(argument, grammar, data) {
+				unknown.ID = "unknown-python-arguments-" + op.ID
+				unknown.Category = "unresolved-process-arguments"
+				unknown.Title = "Python process arguments are unresolved"
+				unknown.Description = "The first list element is a literal executable, but the complete argument list is unresolved. The cited assignment is the nearest preceding textual definition, not proof of runtime control flow."
+				unknown.Provenance = sourceProvenance("python-process-arguments-unknown/v1")
 			}
 			appendUnknown(result, unknown)
 		}
@@ -164,11 +172,19 @@ func treeSitterNodeKey(start, end uint32) uint64 { return uint64(start)<<32 | ui
 func treeSitterOriginIndex(root *gotreesitter.Node, grammar *gotreesitter.Language, name string, data []byte, lines sourceIndex, language string) (map[uint64]*gotreesitter.Node, []treeSitterAssignment, bool, bool) {
 	calls := make(map[uint64]*gotreesitter.Node)
 	assignments := make([]treeSitterAssignment, 0, 32)
-	stack := []*gotreesitter.Node{root}
+	// Carry only the context needed to invalidate module conditional writes.
+	// Pinned JavaScript Parent links can expose hidden grammar wrappers, so
+	// derive this context from the existing downward traversal instead.
+	type entry struct {
+		node, localBlock        *gotreesitter.Node
+		modulePath, conditional bool
+	}
+	stack := []entry{{node: root, modulePath: true}}
 	visited := 0
 	assignmentsComplete := true
 	for len(stack) > 0 && visited < maxTreeSitterOriginNodes {
-		node := stack[len(stack)-1]
+		current := stack[len(stack)-1]
+		node := current.node
 		stack = stack[:len(stack)-1]
 		if node == nil {
 			continue
@@ -178,23 +194,59 @@ func treeSitterOriginIndex(root *gotreesitter.Node, grammar *gotreesitter.Langua
 		if typeName == "call" || typeName == "call_expression" {
 			calls[treeSitterNodeKey(node.StartByte(), node.EndByte())] = node
 		}
-		if assignmentName, value, topLevel, ok := treeSitterAssignmentParts(node, grammar, data, language); ok {
+		conditionalAssignment := current.modulePath && current.conditional && (typeName == "assignment" || typeName == "assignment_expression")
+		if assignmentName, value, topLevel, ok := treeSitterAssignmentParts(node, grammar, data, language, current.localBlock, conditionalAssignment); ok {
 			if len(assignments) < 1024 {
 				assignments = append(assignments, treeSitterAssignment{name: assignmentName, offset: node.StartByte(), origin: report.ValueOrigin{
 					Kind: report.OriginAssignment, Name: assignmentName, Evidence: treeSitterNodeEvidence(name, data, lines, node),
-				}, value: value, topLevel: topLevel})
+				}, value: value, topLevel: topLevel,
+					conditional: conditionalAssignment,
+					localBlock:  current.localBlock})
 			} else {
 				assignmentsComplete = false
 			}
 		}
+		modulePath, conditional := current.modulePath, current.conditional
+		switch typeName {
+		case "if_statement", "elif_clause", "else_clause":
+			conditional = true
+		case "module", "program", "block", "statement_block", "expression_statement", "parenthesized_expression":
+		default:
+			modulePath = false
+		}
 		for index := node.NamedChildCount() - 1; index >= 0; index-- {
-			stack = append(stack, node.NamedChild(index))
+			child := node.NamedChild(index)
+			var localBlock *gotreesitter.Node
+			if language == "javascript" {
+				if typeName == "statement_block" && (child.Type(grammar) == "lexical_declaration" || child.Type(grammar) == "class_declaration" || child.Type(grammar) == "function_declaration") {
+					localBlock = node
+				} else if typeName == "lexical_declaration" && child.Type(grammar) == "variable_declarator" {
+					localBlock = current.localBlock
+				}
+			}
+			stack = append(stack, entry{node: child, modulePath: modulePath, conditional: conditional, localBlock: localBlock})
+		}
+	}
+	// A block-local declaration does not make its later writes module writes.
+	// Compare only the capped definition index, once per file, including
+	// declarations without initializers. Do not scan syntax siblings per call.
+	for index := range assignments {
+		candidate := &assignments[index]
+		if !candidate.conditional {
+			continue
+		}
+		for _, declaration := range assignments {
+			block := declaration.localBlock
+			if block != nil && declaration.name == candidate.name && block.StartByte() <= candidate.offset && candidate.offset < block.EndByte() {
+				candidate.conditional = false
+				break
+			}
 		}
 	}
 	return calls, assignments, len(stack) == 0, assignmentsComplete
 }
 
-func treeSitterAssignmentParts(node *gotreesitter.Node, grammar *gotreesitter.Language, data []byte, language string) (string, *gotreesitter.Node, bool, bool) {
+func treeSitterAssignmentParts(node *gotreesitter.Node, grammar *gotreesitter.Language, data []byte, language string, localBlock *gotreesitter.Node, conditional bool) (string, *gotreesitter.Node, bool, bool) {
 	typeName := node.Type(grammar)
 	var left, value *gotreesitter.Node
 	switch language {
@@ -211,15 +263,64 @@ func treeSitterAssignmentParts(node *gotreesitter.Node, grammar *gotreesitter.La
 		} else if typeName == "assignment_expression" {
 			left = node.ChildByFieldName("left", grammar)
 			value = node.ChildByFieldName("right", grammar)
+		} else if localBlock != nil && (typeName == "class_declaration" || typeName == "function_declaration") {
+			left = node.ChildByFieldName("name", grammar)
 		} else {
 			return "", nil, false, false
 		}
 	}
-	if left == nil || value == nil || left.Type(grammar) != "identifier" {
+	if conditional {
+		left = treeSitterConditionalIdentifier(left, grammar)
+	}
+	if left == nil || left.Type(grammar) != "identifier" || (value == nil && localBlock == nil) {
 		return "", nil, false, false
 	}
 	name := treeSitterNodeText(data, left)
 	return name, value, treeSitterModuleLevelAssignment(node, grammar, language), name != ""
+}
+
+// Parentheses around a sole identifier do not change a conditional write's
+// target. This allocation-free walk stays inside that target expression;
+// commas, destructuring and other expression forms are never unwrapped.
+// Use it only for invalidation, not to expand supported literal definitions.
+func treeSitterConditionalIdentifier(node *gotreesitter.Node, grammar *gotreesitter.Language) *gotreesitter.Node {
+	for node != nil && (node.Type(grammar) == "parenthesized_expression" || node.Type(grammar) == "tuple_pattern") {
+		var inner *gotreesitter.Node
+		for index := 0; index < node.ChildCount(); index++ {
+			child := node.Child(index)
+			switch child.Type(grammar) {
+			case "(", ")", "comment":
+				continue
+			case "identifier", "parenthesized_expression", "tuple_pattern":
+				if inner != nil {
+					return nil
+				}
+				inner = child
+			default:
+				return nil
+			}
+		}
+		node = inner
+	}
+	return node
+}
+
+func treeSitterPythonLiteralExecutable(argument *gotreesitter.Node, grammar *gotreesitter.Language, data []byte) bool {
+	if argument == nil || (argument.Type(grammar) != "list" && argument.Type(grammar) != "tuple") {
+		return false
+	}
+	for index := 0; index < argument.ChildCount(); index++ {
+		first := argument.Child(index)
+		if !first.IsNamed() || first.Type(grammar) == "comment" {
+			continue
+		}
+		if first.Type(grammar) != "string" {
+			return false
+		}
+		_, ok := decodeSimpleQuotedLiteral(treeSitterNodeText(data, first))
+		return ok
+	}
+	return false
 }
 
 func treeSitterModuleLevelAssignment(node *gotreesitter.Node, grammar *gotreesitter.Language, language string) bool {
@@ -338,7 +439,13 @@ func resolveTreeSitterLiteral(node *gotreesitter.Node, grammar *gotreesitter.Lan
 		var match *treeSitterAssignment
 		for index := range assignments {
 			candidate := &assignments[index]
-			if candidate.name != name || candidate.offset >= before || !candidate.topLevel {
+			if candidate.name != name || candidate.offset >= before {
+				continue
+			}
+			if candidate.conditional {
+				return nil, nil, false
+			}
+			if !candidate.topLevel {
 				continue
 			}
 			if match != nil {
