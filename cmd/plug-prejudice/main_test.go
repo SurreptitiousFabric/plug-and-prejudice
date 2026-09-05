@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -152,6 +153,107 @@ func TestScannerProducerEmitsIndependentlyDecodableSchemaTwoReport(t *testing.T)
 	}
 	if decoded.SchemaVersion != report.SchemaVersion || decoded.Review == nil || decoded.Relationships == nil || decoded.Unknowns == nil {
 		t.Fatalf("producer omitted schema-2 contract sections: %#v", decoded)
+	}
+}
+
+func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
+	for _, test := range []struct {
+		name, expression, suffix string
+		unknown                  bool
+		wantArguments            []string
+	}{
+		{"computed-list", "buildArguments()", "", true, nil},
+		{"partial-array", `["--url", runtimeURL]`, "", true, nil},
+		{"empty-control", "[]", "", false, nil},
+		{"literal-trailing-comment", `["https://example.test"]`, " /* note */", false, []string{"https://example.test"}},
+		{"computed-trailing-comment", "buildArguments()", " /* note */", true, nil},
+		{"partial-array-comments", `[/* before */ "--url", runtimeURL /* after */]`, " /* note */", true, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target := t.TempDir()
+			// Only the trusted producer runs. Synthetic target bytes are
+			// non-executable data read through the existing test arrangement.
+			contents := map[string][]byte{
+				"manifest.json": []byte(`{"schemaVersion":1,"id":"example.arguments","name":"Arguments","version":"1.0.0","kinds":["service"],"entryPoints":{"service":"helper.js"}}`),
+				"helper.js":     []byte("child_process.spawn('printf', ['ok']);\nchild_process.spawn('curl', " + test.expression + test.suffix + ");\n"),
+			}
+			for name, data := range contents {
+				if err := os.WriteFile(filepath.Join(target, name), data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			readEnd, writeEnd, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalArgs, originalStdout := os.Args, os.Stdout
+			os.Args, os.Stdout = []string{"plug-prejudice", "--target", target}, writeEnd
+			t.Cleanup(func() { os.Args, os.Stdout = originalArgs, originalStdout })
+			done := make(chan []byte, 1)
+			go func() {
+				data, _ := io.ReadAll(readEnd)
+				done <- data
+			}()
+			status := run()
+			_ = writeEnd.Close()
+			data := <-done
+			_ = readEnd.Close()
+			if status != 0 {
+				t.Fatalf("scanner status = %d", status)
+			}
+			decoded, err := report.Decode(data)
+			if err != nil {
+				t.Fatalf("producer report rejected by independent decoder: %v", err)
+			}
+			if !test.unknown {
+				if decoded.Status != report.StatusComplete || len(decoded.Unknowns) != 0 || decoded.Review.UnknownBehavior.Unknowns != 0 {
+					t.Fatalf("literal control report is incomplete: %#v", decoded)
+				}
+				var process report.Operation
+				for _, op := range decoded.Operations {
+					if op.Category == "process-execution-via-javascript" && op.Command == "curl" {
+						process = op
+					}
+				}
+				if process.ID == "" || process.Dynamic || process.Confidence != report.ConfidenceHigh || !reflect.DeepEqual(process.Arguments, test.wantArguments) {
+					t.Fatalf("literal producer lost process evidence: %#v", process)
+				}
+				if len(test.wantArguments) > 0 {
+					if len(decoded.Resources) != 1 || decoded.Resources[0].Kind != "network-domain" || decoded.Resources[0].Value != "example.test" || decoded.Resources[0].RelatedOperationID != process.ID {
+						t.Fatalf("literal producer lost linked network evidence: %#v", decoded.Resources)
+					}
+				}
+				return
+			}
+			if decoded.Status != report.StatusIncomplete || len(decoded.Unknowns) != 1 || decoded.Review.UnknownBehavior.Unknowns != 1 || decoded.Review.Counts.UnknownBehaviors != 1 {
+				t.Fatalf("producer lost argument uncertainty: status=%s unknowns=%#v review=%#v", decoded.Status, decoded.Unknowns, decoded.Review)
+			}
+			unknown := decoded.Unknowns[0]
+			var affected report.Operation
+			for _, op := range decoded.Operations {
+				if op.Command == "child_process.spawn" && op.Evidence.LineStart == 2 {
+					affected = op
+				}
+				if op.Category == "process-execution-via-javascript" && op.Command == "curl" {
+					t.Errorf("producer retained overconfident process: %#v", op)
+				}
+			}
+			if affected.ID == "" || !affected.Dynamic || len(unknown.AffectedOperations) != 1 || unknown.AffectedOperations[0] != affected.ID ||
+				unknown.Scope != report.ScopeRuntime || unknown.Provenance.RuleID != "javascript-process-arguments-unknown/v1" ||
+				unknown.Evidence[0].InputID != report.TargetEvidenceInputID || unknown.Evidence[0].Operation != affected.Evidence.Operation ||
+				len(unknown.Origins) == 0 || unknown.Origins[0].Evidence.Operation != test.expression || unknown.Origins[0].Evidence.InputID != report.TargetEvidenceInputID {
+				t.Fatalf("producer uncertainty lost call/evidence binding: %#v; call=%#v", unknown, affected)
+			}
+			linked := false
+			for _, edge := range decoded.Relationships {
+				if edge.Type == report.RelationshipUnknownBecause && edge.From == unknown.Reference && edge.To == affected.Reference && edge.FromKind == report.NodeUnknown && edge.ToKind == report.NodeOperation {
+					linked = true
+				}
+			}
+			if !linked {
+				t.Fatalf("producer graph lacks argument unknown's exact call link: %#v", decoded.Relationships)
+			}
+		})
 	}
 }
 

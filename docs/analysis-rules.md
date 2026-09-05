@@ -380,10 +380,29 @@ For a reviewed set of Python `subprocess` and JavaScript `child_process`
 execution APIs, direct literal strings/arrays and recursively referenced,
 single-definition module-level literal assignments produce a separate
 `process-execution-via-python` or `process-execution-via-javascript` operation.
-JavaScript literal argument arrays are retained as command arguments. These
+JavaScript requires a string executable and, if present, a complete array of
+strings; omitted arguments and an explicit empty array are retained as an
+empty argument list. These
 operations feed the ordinary command capability and correlation stages. An
 informational flow fact cites the assignment and call whenever an assignment
 was followed.
+
+Ordinary parsed JavaScript block and line comments at call-argument or
+array-element boundaries are trivia: they do not occupy an argument position
+or change literal values. Commas and array holes remain significant, and
+comment-looking text inside strings remains part of those values. Comments
+never turn an unresolved value or an options/callback overload into resolved
+arguments; source evidence retains its original text and offsets.
+
+A known JavaScript executable does not establish complete arguments. An
+unresolved argument expression or array element retains the neutral call with
+an argument-specific unknown, citing that expression and bounded available
+textual origins. No derived process operation, argument-dependent capability,
+or correlation is emitted from a silently shortened list. Scalar, sparse,
+nested, and spread argument arrays are not resolved. Options/callback overloads
+(including trailing options or callbacks) remain outside this literal-only
+boundary and produce a call-linked unknown rather than being interpreted as
+arguments or ignored. The accepted API set and Python behavior are unchanged.
 
 Branch-local definitions, duplicate definitions, cycles, computed values,
 unsupported quoting, missing arguments, and other ambiguous forms remain a

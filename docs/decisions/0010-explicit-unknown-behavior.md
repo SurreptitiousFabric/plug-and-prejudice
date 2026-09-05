@@ -35,6 +35,15 @@ origin-traversal budget exhaustion receive dedicated unknown records. Deeper
 branch-sensitive flow remains future work and must not be represented as
 complete.
 
+JavaScript argument-list uncertainty is distinct from executable uncertainty.
+A resolved string executable with unresolved arguments retains a neutral,
+dynamic call and a dedicated argument unknown citing the affected expression
+and available textual origins. It does not create a resolved process operation
+from only the executable. The literal-only boundary accepts omitted arguments
+and empty arrays; options/callback overloads remain explicitly unknown. This
+uses the existing schema, provenance, graph, and production budgets and does
+not add API support or change the Python boundary.
+
 A report containing an explicit unknown is `incomplete`, even if no scanner
 error occurred. The unknown does not assign severity and does not characterize
 the plugin as unsafe or safe.

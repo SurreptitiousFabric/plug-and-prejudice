@@ -103,13 +103,14 @@ func analyzeTreeSitter(name string, data []byte, language string, result *Result
 			Provenance: sourceProvenance(language + "-call-extraction/v1"),
 		}
 		callNode := callNodes[treeSitterNodeKey(call.StartByte, call.EndByte)]
-		argument := firstTreeSitterArgument(callNode, grammar)
+		argument := firstTreeSitterArgument(callNode, grammar, language)
 		isExecution := isTreeSitterExecutionAPI(language, command)
 		var processValues []string
 		var processOrigins []report.ValueOrigin
+		unresolvedArgument := argument
 		processResolved := false
 		if isExecution {
-			processValues, processOrigins, processResolved = resolveTreeSitterProcessValues(language, callNode, argument, grammar, assignments, data)
+			processValues, processOrigins, unresolvedArgument, processResolved = resolveTreeSitterProcessValues(language, callNode, argument, grammar, assignments, data)
 		}
 		if isExecution && !processResolved {
 			op.Dynamic = true
@@ -138,14 +139,22 @@ func analyzeTreeSitter(name string, data []byte, language string, result *Result
 			}
 		}
 		if op.Dynamic {
-			origins := treeSitterDynamicOrigins(argument, grammar, assignments, name, data, lines)
-			appendUnknown(result, report.Unknown{
+			origins := treeSitterDynamicOrigins(unresolvedArgument, grammar, assignments, name, data, lines)
+			unknown := report.Unknown{
 				ID: "unknown-" + language + "-command-" + op.ID, Category: "unresolved-command", Reason: report.UnknownUnresolvedFlow,
 				Scope: report.ScopeRuntime, Confidence: report.ConfidenceHigh, Title: treeSitterLanguageLabel(language) + " process executable is selected at runtime",
 				Description: "A process-execution API receives a value that is not a bounded literal string or literal string array. The cited assignment is the nearest preceding textual definition, not proof of runtime control flow.",
 				Evidence:    []report.Evidence{op.Evidence}, Origins: origins, AffectedOperations: []string{op.ID},
 				SuppressedRules: []string{"command-capability/v1", "operation-correlation/v1"}, Provenance: sourceProvenance(language + "-dynamic-command-unknown/v1"),
-			})
+			}
+			if language == "javascript" && unresolvedArgument != argument {
+				unknown.ID = "unknown-javascript-arguments-" + op.ID
+				unknown.Category = "unresolved-process-arguments"
+				unknown.Title = "JavaScript process arguments are unresolved"
+				unknown.Description = "The executable value is statically resolved, but the argument list or remaining call form is outside the supported literal-argument boundary. Options and callback overloads are not analyzed. The cited assignment is the nearest preceding textual definition, not proof of runtime control flow."
+				unknown.Provenance = sourceProvenance("javascript-process-arguments-unknown/v1")
+			}
+			appendUnknown(result, unknown)
 		}
 	}
 }
@@ -227,27 +236,43 @@ func treeSitterModuleLevelAssignment(node *gotreesitter.Node, grammar *gotreesit
 	return false
 }
 
-func resolveTreeSitterProcessValues(language string, call, argument *gotreesitter.Node, grammar *gotreesitter.Language, assignments []treeSitterAssignment, data []byte) ([]string, []report.ValueOrigin, bool) {
+func resolveTreeSitterProcessValues(language string, call, argument *gotreesitter.Node, grammar *gotreesitter.Language, assignments []treeSitterAssignment, data []byte) ([]string, []report.ValueOrigin, *gotreesitter.Node, bool) {
 	if argument == nil {
-		return nil, nil, false
+		return nil, nil, argument, false
 	}
-	values, origins, ok := resolveTreeSitterLiteral(argument, grammar, assignments, data, argument.StartByte(), make(map[string]bool), 0)
-	if !ok || language != "javascript" || len(values) != 1 || call == nil {
-		return values, origins, ok
+	literalType := ""
+	if language == "javascript" {
+		literalType = "string"
+	}
+	values, origins, ok := resolveTreeSitterLiteral(argument, grammar, assignments, data, argument.StartByte(), make(map[string]bool), 0, literalType)
+	if !ok || language != "javascript" || call == nil {
+		return values, origins, argument, ok
 	}
 	arguments := call.ChildByFieldName("arguments", grammar)
-	if arguments == nil || arguments.NamedChildCount() < 2 {
-		return values, origins, true
+	extraArgument := javaScriptArgument(arguments, grammar, 1)
+	if extraArgument == nil {
+		return values, origins, nil, true
 	}
-	extra, extraOrigins, extraOK := resolveTreeSitterLiteral(arguments.NamedChild(1), grammar, assignments, data, arguments.NamedChild(1).StartByte(), make(map[string]bool), 0)
+	extra, extraOrigins, extraOK := resolveTreeSitterLiteral(extraArgument, grammar, assignments, data, extraArgument.StartByte(), make(map[string]bool), 0, "array")
 	if !extraOK {
-		return values, origins, true
+		// Knowing the executable does not establish the complete argument list.
+		return nil, nil, extraArgument, false
 	}
-	return append(values, extra...), append(origins, extraOrigins...), true
+	if additionalArgument := javaScriptArgument(arguments, grammar, 2); additionalArgument != nil {
+		// Options/callback overloads can change process semantics. Keep them
+		// explicitly unknown rather than interpreting or silently ignoring them.
+		return nil, nil, additionalArgument, false
+	}
+	return append(values, extra...), append(origins, extraOrigins...), nil, true
 }
 
-func resolveTreeSitterLiteral(node *gotreesitter.Node, grammar *gotreesitter.Language, assignments []treeSitterAssignment, data []byte, before uint32, seen map[string]bool, depth int) ([]string, []report.ValueOrigin, bool) {
+// literalType constrains JavaScript API slots through existing assignment flow.
+// An empty constraint preserves the Python literal-resolution boundary.
+func resolveTreeSitterLiteral(node *gotreesitter.Node, grammar *gotreesitter.Language, assignments []treeSitterAssignment, data []byte, before uint32, seen map[string]bool, depth int, literalType string) ([]string, []report.ValueOrigin, bool) {
 	if node == nil || depth > 16 {
+		return nil, nil, false
+	}
+	if literalType != "" && node.Type(grammar) != literalType && node.Type(grammar) != "identifier" {
 		return nil, nil, false
 	}
 	switch node.Type(grammar) {
@@ -255,13 +280,49 @@ func resolveTreeSitterLiteral(node *gotreesitter.Node, grammar *gotreesitter.Lan
 		value, ok := decodeSimpleQuotedLiteral(treeSitterNodeText(data, node))
 		return []string{value}, nil, ok
 	case "list", "tuple", "array":
-		if node.NamedChildCount() == 0 {
+		if node.NamedChildCount() == 0 && literalType != "array" {
 			return nil, nil, false
 		}
-		values := make([]string, 0, node.NamedChildCount())
+		partType := ""
+		valueCount := node.NamedChildCount()
+		if literalType == "array" {
+			partType = "string"
+			valueCount = 0
+			// Named children omit holes. Do not mistake a sparse array for
+			// a complete list; a single trailing comma is harmless syntax.
+			expectValue := true
+			for index := 1; index < node.ChildCount()-1; index++ {
+				child := node.Child(index)
+				if child.Type(grammar) == "comment" {
+					continue
+				}
+				comma := child.Type(grammar) == ","
+				if comma == expectValue {
+					return nil, nil, false
+				}
+				if !comma {
+					valueCount++
+				}
+				expectValue = comma
+			}
+		}
+		values := make([]string, 0, valueCount)
 		origins := make([]report.ValueOrigin, 0)
-		for index := 0; index < node.NamedChildCount(); index++ {
-			part, partOrigins, ok := resolveTreeSitterLiteral(node.NamedChild(index), grammar, assignments, data, before, seen, depth+1)
+		firstChild, childLimit := 0, node.NamedChildCount()
+		if literalType == "array" {
+			firstChild, childLimit = 1, node.ChildCount()-1
+		}
+		for index := firstChild; index < childLimit; index++ {
+			var child *gotreesitter.Node
+			if literalType == "array" {
+				child = node.Child(index)
+				if child.Type(grammar) == "comment" || child.Type(grammar) == "," {
+					continue
+				}
+			} else {
+				child = node.NamedChild(index)
+			}
+			part, partOrigins, ok := resolveTreeSitterLiteral(child, grammar, assignments, data, before, seen, depth+1, partType)
 			if !ok || len(part) != 1 {
 				return nil, nil, false
 			}
@@ -289,7 +350,7 @@ func resolveTreeSitterLiteral(node *gotreesitter.Node, grammar *gotreesitter.Lan
 			return nil, nil, false
 		}
 		seen[name] = true
-		values, origins, ok := resolveTreeSitterLiteral(match.value, grammar, assignments, data, match.offset, seen, depth+1)
+		values, origins, ok := resolveTreeSitterLiteral(match.value, grammar, assignments, data, match.offset, seen, depth+1, literalType)
 		delete(seen, name)
 		if !ok {
 			return nil, nil, false
@@ -314,15 +375,39 @@ func decodeSimpleQuotedLiteral(value string) (string, bool) {
 	return inner, true
 }
 
-func firstTreeSitterArgument(call *gotreesitter.Node, grammar *gotreesitter.Language) *gotreesitter.Node {
+func firstTreeSitterArgument(call *gotreesitter.Node, grammar *gotreesitter.Language, language string) *gotreesitter.Node {
 	if call == nil {
 		return nil
 	}
 	arguments := call.ChildByFieldName("arguments", grammar)
+	if language == "javascript" {
+		return javaScriptArgument(arguments, grammar, 0)
+	}
 	if arguments == nil || arguments.NamedChildCount() == 0 {
 		return nil
 	}
 	return arguments.NamedChild(0)
+}
+
+// The pinned JavaScript grammar includes comments among named children.
+// Select semantic arguments without allocating a filtered list or dropping
+// other node types, including spreads and unsupported overload arguments.
+// Indexed children avoid the pinned runtime's repeated named-child scans.
+func javaScriptArgument(arguments *gotreesitter.Node, grammar *gotreesitter.Language, position int) *gotreesitter.Node {
+	if arguments == nil {
+		return nil
+	}
+	for index := 1; index < arguments.ChildCount()-1; index++ {
+		child := arguments.Child(index)
+		if child.Type(grammar) == "comment" || child.Type(grammar) == "," {
+			continue
+		}
+		if position == 0 {
+			return child
+		}
+		position--
+	}
+	return nil
 }
 
 func isTreeSitterExecutionAPI(language, command string) bool {
