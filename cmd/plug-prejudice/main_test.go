@@ -158,17 +158,20 @@ func TestScannerProducerEmitsIndependentlyDecodableSchemaTwoReport(t *testing.T)
 
 func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
 	for _, test := range []struct {
-		name, expression, suffix, prefix string
-		unknown                          bool
-		wantArguments                    []string
+		name, expression, suffix, prefix, ending string
+		unknown                                  bool
+		wantArguments                            []string
 	}{
-		{"computed-list", "buildArguments()", "", "", true, nil},
-		{"partial-array", `["--url", runtimeURL]`, "", "", true, nil},
-		{"empty-control", "[]", "", "", false, nil},
-		{"literal-trailing-comment", `["https://example.test"]`, " /* note */", "", false, []string{"https://example.test"}},
-		{"computed-trailing-comment", "buildArguments()", " /* note */", "", true, nil},
-		{"partial-array-comments", `[/* before */ "--url", runtimeURL /* after */]`, " /* note */", "", true, nil},
-		{"conditional-arguments", "args", " /* after */", "let args = ['https://discarded.example.test'];\nif (enabled) { args = chooseArguments(); }\n", true, nil},
+		{"computed-list", "buildArguments()", "", "", "", true, nil},
+		{"partial-array", `["--url", runtimeURL]`, "", "", "", true, nil},
+		{"empty-control", "[]", "", "", "", false, nil},
+		{"literal-trailing-comment", `["https://example.test"]`, " /* note */", "", "", false, []string{"https://example.test"}},
+		{"computed-trailing-comment", "buildArguments()", " /* note */", "", "", true, nil},
+		{"partial-array-comments", `[/* before */ "--url", runtimeURL /* after */]`, " /* note */", "", "", true, nil},
+		{"conditional-arguments", "args", " /* after */", "let args = ['https://discarded.example.test'];\nif (enabled) { args = chooseArguments(); }\n", "", true, nil},
+		{"parameter-arguments", "args", " /* after */", "const args = ['https://discarded.example.test'];\nfunction launch(/* parameter */ args) {\n", "}\n", true, nil},
+		{"parameter-identity-spelling", "args", "", "const args = ['https://discarded.example.test'];\nfunction launch(é) {\n", "}\n", true, nil},
+		{"parameter-identity-overlength", "args", "", "const args = ['https://discarded.example.test'];\nfunction launch(" + strings.Repeat("p", 4096) + "x) {\n", "}\n", true, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			target := t.TempDir()
@@ -176,7 +179,7 @@ func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
 			// non-executable data read through the existing test arrangement.
 			contents := map[string][]byte{
 				"manifest.json": []byte(`{"schemaVersion":1,"id":"example.arguments","name":"Arguments","version":"1.0.0","kinds":["service"],"entryPoints":{"service":"helper.js"}}`),
-				"helper.js":     []byte("child_process.spawn('printf', ['ok']);\n" + test.prefix + "child_process.spawn('curl', " + test.expression + test.suffix + ");\n"),
+				"helper.js":     []byte("child_process.spawn('printf', ['ok']);\n" + test.prefix + "child_process.spawn('curl', " + test.expression + test.suffix + ");\n" + test.ending),
 			}
 			for name, data := range contents {
 				if err := os.WriteFile(filepath.Join(target, name), data, 0o600); err != nil {
@@ -263,7 +266,27 @@ func TestScannerJavaScriptProcessArgumentUncertainty(t *testing.T) {
 			if !linked {
 				t.Fatalf("producer graph lacks argument unknown's exact call link: %#v", decoded.Relationships)
 			}
-			if test.prefix != "" {
+			if strings.HasPrefix(test.name, "parameter-") {
+				if len(decoded.Resources) != 0 {
+					t.Fatalf("parameter inherited module resources: %#v", decoded.Resources)
+				}
+				for _, origin := range unknown.Origins {
+					if origin.Kind != report.OriginUseSite || origin.Name != "args" || origin.Evidence.Operation != "args" || origin.Evidence.LineStart != affected.Evidence.LineStart {
+						t.Fatalf("parameter origin is not the affected use site: %#v", origin)
+					}
+				}
+			}
+			if strings.HasPrefix(test.name, "parameter-identity-") {
+				wantCause := "spelling"
+				if test.name == "parameter-identity-overlength" {
+					wantCause = "4,096"
+				}
+				text := strings.ToLower(unknown.Title + " " + unknown.Description)
+				if unknown.Reason != report.UnknownUnresolvedFlow || !strings.Contains(text, "identifier identity") || !strings.Contains(text, wantCause) || strings.Contains(text, "cited assignment") || strings.Contains(text, "selected at runtime") || strings.Contains(text, "options") || strings.Contains(text, "callback") || strings.Contains(unknown.Title, "executable") {
+					t.Errorf("producer lost truthful identity cause %q: title=%q description=%q", wantCause, unknown.Title, unknown.Description)
+				}
+			}
+			if test.name == "conditional-arguments" {
 				if len(decoded.Resources) != 0 {
 					t.Fatalf("discarded conditional argument still supplies resources: %#v", decoded.Resources)
 				}

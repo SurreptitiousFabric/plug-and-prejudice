@@ -15,6 +15,20 @@ const treeSitterParseTimeoutMicros = 2_000_000
 
 const maxTreeSitterOriginNodes = 100_000
 
+// Semantic identifier support is independent of evidence/display truncation.
+const maxTreeSitterParameterIdentifierBytes = 4096
+
+type treeSitterParameterFailure uint8
+
+const (
+	treeSitterParameterNone treeSitterParameterFailure = iota
+	treeSitterParameterShadowed
+	treeSitterParameterSpelling
+	treeSitterParameterLength
+	treeSitterParameterSpan
+	treeSitterParameterBudget
+)
+
 type treeSitterAssignment struct {
 	name        string
 	offset      uint32
@@ -23,6 +37,87 @@ type treeSitterAssignment struct {
 	conditional bool
 	localBlock  *gotreesitter.Node
 	origin      report.ValueOrigin
+}
+
+type treeSitterCall struct {
+	node       *gotreesitter.Node
+	parameters *treeSitterParameters
+}
+
+type treeSitterParameters struct {
+	start, end      uint32
+	names           map[string]bool
+	incomplete      bool
+	identityFailure treeSitterParameterFailure
+	javascript      bool
+}
+
+func (p *treeSitterParameters) blocks(node *gotreesitter.Node, data []byte) bool {
+	return p.blockingFailure(node, data) != treeSitterParameterNone
+}
+
+func (p *treeSitterParameters) blockingFailure(node *gotreesitter.Node, data []byte) treeSitterParameterFailure {
+	if p == nil {
+		return treeSitterParameterNone
+	}
+	name, failure := treeSitterParameterIdentifier(node, data, p.javascript)
+	if failure == treeSitterParameterSpan {
+		return failure
+	}
+	// A referenced module definition retains its own context, even when the
+	// call is inside a function with a same-named parameter.
+	if node.StartByte() < p.start || node.EndByte() > p.end {
+		return treeSitterParameterNone
+	}
+	if p.incomplete {
+		return treeSitterParameterBudget
+	}
+	if failure != treeSitterParameterNone {
+		return failure
+	}
+	if p.identityFailure != treeSitterParameterNone {
+		return p.identityFailure
+	}
+	if p.names[name] {
+		return treeSitterParameterShadowed
+	}
+	return treeSitterParameterNone
+}
+
+// Only parsed identifier nodes reach this reader. Validate the original full
+// span before copying at most 4,096 bytes; a clamped/display prefix is not a name.
+func treeSitterParameterIdentifier(node *gotreesitter.Node, data []byte, javascript bool) (string, treeSitterParameterFailure) {
+	if node == nil || node.IsMissing() || node.IsError() {
+		return "", treeSitterParameterSpan
+	}
+	start, end := node.StartByte(), node.EndByte()
+	if start >= end || uint64(end) > uint64(len(data)) {
+		return "", treeSitterParameterSpan
+	}
+	if end-start > maxTreeSitterParameterIdentifierBytes {
+		return "", treeSitterParameterLength
+	}
+	name := string(data[start:end])
+	if !treeSitterASCIIIdentifier(name, javascript) {
+		return "", treeSitterParameterSpelling
+	}
+	return name, treeSitterParameterNone
+}
+
+// Called only for parsed identifier nodes, never comments or literal contents.
+// Unsupported spelling cannot establish that two bindings are distinct.
+func treeSitterASCIIIdentifier(name string, javascript bool) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' || javascript && c == '$' || i > 0 && c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func treeSitterLanguage(name string, data []byte) string {
@@ -104,15 +199,17 @@ func analyzeTreeSitter(name string, data []byte, language string, result *Result
 			Evidence:   report.Evidence{Path: name, LineStart: lineStart, LineEnd: lineEnd, Operation: boundedSourceSlice(data, call.StartByte, call.EndByte), Excerpt: lines.line(lineStart)},
 			Provenance: sourceProvenance(language + "-call-extraction/v1"),
 		}
-		callNode := callNodes[treeSitterNodeKey(call.StartByte, call.EndByte)]
+		indexedCall := callNodes[treeSitterNodeKey(call.StartByte, call.EndByte)]
+		callNode, parameters := indexedCall.node, indexedCall.parameters
 		argument := firstTreeSitterArgument(callNode, grammar, language)
 		isExecution := isTreeSitterExecutionAPI(language, command)
 		var processValues []string
 		var processOrigins []report.ValueOrigin
 		unresolvedArgument := argument
 		processResolved := false
+		var parameterFailure treeSitterParameterFailure
 		if isExecution {
-			processValues, processOrigins, unresolvedArgument, processResolved = resolveTreeSitterProcessValues(language, callNode, argument, grammar, assignments, data)
+			processValues, processOrigins, unresolvedArgument, processResolved = resolveTreeSitterProcessValues(language, callNode, argument, grammar, assignments, data, parameters, &parameterFailure)
 		}
 		if isExecution && !processResolved {
 			op.Dynamic = true
@@ -141,7 +238,7 @@ func analyzeTreeSitter(name string, data []byte, language string, result *Result
 			}
 		}
 		if op.Dynamic {
-			origins := treeSitterDynamicOrigins(unresolvedArgument, grammar, assignments, name, data, lines)
+			origins := treeSitterDynamicOrigins(unresolvedArgument, grammar, assignments, name, data, lines, parameters)
 			unknown := report.Unknown{
 				ID: "unknown-" + language + "-command-" + op.ID, Category: "unresolved-command", Reason: report.UnknownUnresolvedFlow,
 				Scope: report.ScopeRuntime, Confidence: report.ConfidenceHigh, Title: treeSitterLanguageLabel(language) + " process executable is selected at runtime",
@@ -162,6 +259,28 @@ func analyzeTreeSitter(name string, data []byte, language string, result *Result
 				unknown.Description = "The first list element is a literal executable, but the complete argument list is unresolved. The cited assignment is the nearest preceding textual definition, not proof of runtime control flow."
 				unknown.Provenance = sourceProvenance("python-process-arguments-unknown/v1")
 			}
+			if parameterFailure == treeSitterParameterBudget {
+				unknown.Reason = report.UnknownBudgetExhaustion
+				unknown.Title = treeSitterLanguageLabel(language) + " process executable is unresolved because parameter analysis reached its budget"
+				if unknown.Category == "unresolved-process-arguments" {
+					unknown.Title = treeSitterLanguageLabel(language) + " process arguments are unresolved because parameter analysis reached its budget"
+				}
+				unknown.Description = "The bounded function-parameter context is incomplete. Identifier values at this call cannot be substituted from module definitions; only use-site evidence is retained."
+			} else if parameterFailure == treeSitterParameterSpelling || parameterFailure == treeSitterParameterLength || parameterFailure == treeSitterParameterSpan {
+				unknown.Title = treeSitterLanguageLabel(language) + " process executable is unresolved because identifier identity is unavailable"
+				prefix := ""
+				if unknown.Category == "unresolved-process-arguments" {
+					unknown.Title = treeSitterLanguageLabel(language) + " process arguments are unresolved because identifier identity is unavailable"
+					prefix = "The executable value is statically resolved. "
+				}
+				cause := "An identifier use or function parameter has spelling outside the supported unescaped ASCII boundary."
+				if parameterFailure == treeSitterParameterLength {
+					cause = "A complete identifier token exceeds the supported 4,096-source-byte length bound."
+				} else if parameterFailure == treeSitterParameterSpan {
+					cause = "A complete identifier token has an unavailable or invalid source span."
+				}
+				unknown.Description = prefix + cause + " The analyser could not establish identifier identity and withheld module-literal substitution. Use-site evidence does not establish a particular parameter binding or runtime value."
+			}
 			appendUnknown(result, unknown)
 		}
 	}
@@ -169,8 +288,8 @@ func analyzeTreeSitter(name string, data []byte, language string, result *Result
 
 func treeSitterNodeKey(start, end uint32) uint64 { return uint64(start)<<32 | uint64(end) }
 
-func treeSitterOriginIndex(root *gotreesitter.Node, grammar *gotreesitter.Language, name string, data []byte, lines sourceIndex, language string) (map[uint64]*gotreesitter.Node, []treeSitterAssignment, bool, bool) {
-	calls := make(map[uint64]*gotreesitter.Node)
+func treeSitterOriginIndex(root *gotreesitter.Node, grammar *gotreesitter.Language, name string, data []byte, lines sourceIndex, language string) (map[uint64]treeSitterCall, []treeSitterAssignment, bool, bool) {
+	calls := make(map[uint64]treeSitterCall)
 	assignments := make([]treeSitterAssignment, 0, 32)
 	// Carry only the context needed to invalidate module conditional writes.
 	// Pinned JavaScript Parent links can expose hidden grammar wrappers, so
@@ -178,9 +297,12 @@ func treeSitterOriginIndex(root *gotreesitter.Node, grammar *gotreesitter.Langua
 	type entry struct {
 		node, localBlock        *gotreesitter.Node
 		modulePath, conditional bool
+		moduleChild, directBody bool
+		parameters              *treeSitterParameters
 	}
 	stack := []entry{{node: root, modulePath: true}}
 	visited := 0
+	parameterNames, parameterSteps := maxRetainedArguments, maxTreeSitterOriginNodes
 	assignmentsComplete := true
 	for len(stack) > 0 && visited < maxTreeSitterOriginNodes {
 		current := stack[len(stack)-1]
@@ -192,7 +314,19 @@ func treeSitterOriginIndex(root *gotreesitter.Node, grammar *gotreesitter.Langua
 		visited++
 		typeName := node.Type(grammar)
 		if typeName == "call" || typeName == "call_expression" {
-			calls[treeSitterNodeKey(node.StartByte(), node.EndByte())] = node
+			var parameters *treeSitterParameters
+			if current.directBody {
+				parameters = current.parameters
+			}
+			calls[treeSitterNodeKey(node.StartByte(), node.EndByte())] = treeSitterCall{node, parameters}
+		}
+		var functionParameters *treeSitterParameters
+		var functionBody *gotreesitter.Node
+		if current.moduleChild {
+			functionParameters = treeSitterSimpleParameters(node, grammar, data, language, &parameterNames, &parameterSteps)
+			if functionParameters != nil {
+				functionBody = node.ChildByFieldName("body", grammar)
+			}
 		}
 		conditionalAssignment := current.modulePath && current.conditional && (typeName == "assignment" || typeName == "assignment_expression")
 		if assignmentName, value, topLevel, ok := treeSitterAssignmentParts(node, grammar, data, language, current.localBlock, conditionalAssignment); ok {
@@ -216,6 +350,15 @@ func treeSitterOriginIndex(root *gotreesitter.Node, grammar *gotreesitter.Langua
 		}
 		for index := node.NamedChildCount() - 1; index >= 0; index-- {
 			child := node.NamedChild(index)
+			var parameters *treeSitterParameters
+			if functionParameters != nil && child == functionBody {
+				parameters = functionParameters
+			} else if current.directBody {
+				switch typeName {
+				case "block", "statement_block", "expression_statement", "return_statement", "parenthesized_expression":
+					parameters = current.parameters
+				}
+			}
 			var localBlock *gotreesitter.Node
 			if language == "javascript" {
 				if typeName == "statement_block" && (child.Type(grammar) == "lexical_declaration" || child.Type(grammar) == "class_declaration" || child.Type(grammar) == "function_declaration") {
@@ -224,7 +367,8 @@ func treeSitterOriginIndex(root *gotreesitter.Node, grammar *gotreesitter.Langua
 					localBlock = current.localBlock
 				}
 			}
-			stack = append(stack, entry{node: child, modulePath: modulePath, conditional: conditional, localBlock: localBlock})
+			stack = append(stack, entry{node: child, modulePath: modulePath, conditional: conditional, localBlock: localBlock,
+				moduleChild: node == root || (current.moduleChild && language == "javascript" && typeName == "export_statement" && child.Type(grammar) == "function_declaration"), directBody: parameters != nil, parameters: parameters})
 		}
 	}
 	// A block-local declaration does not make its later writes module writes.
@@ -244,6 +388,69 @@ func treeSitterOriginIndex(root *gotreesitter.Node, grammar *gotreesitter.Langua
 		}
 	}
 	return calls, assignments, len(stack) == 0, assignmentsComplete
+}
+
+// Inspect each ordinary module function header once. Names share a per-file
+// 1,024-entry allowance; header/parameter children share a 100,000-step cap.
+// Exhaustion retains an incomplete context rather than asserting no binding.
+// Other signature forms retain their existing analysis boundary.
+func treeSitterSimpleParameters(node *gotreesitter.Node, grammar *gotreesitter.Language, data []byte, language string, namesLeft, stepsLeft *int) *treeSitterParameters {
+	if (language != "python" || node.Type(grammar) != "function_definition") &&
+		(language != "javascript" || node.Type(grammar) != "function_declaration") {
+		return nil
+	}
+	context := &treeSitterParameters{start: node.StartByte(), end: node.EndByte(), javascript: language == "javascript"}
+	var parameters *gotreesitter.Node
+	for index := 0; index < node.ChildCount(); index++ {
+		if *stepsLeft == 0 {
+			context.incomplete = true
+			return context
+		}
+		*stepsLeft--
+		child := node.Child(index)
+		switch child.Type(grammar) {
+		case "async":
+			return nil
+		case "parameters", "formal_parameters":
+			parameters = child
+		}
+	}
+	if parameters == nil {
+		context.incomplete = true
+		return context
+	}
+	for index := 0; index < parameters.ChildCount(); index++ {
+		if *stepsLeft == 0 {
+			context.incomplete = true
+			return context
+		}
+		*stepsLeft--
+		child := parameters.Child(index)
+		switch child.Type(grammar) {
+		case "(", ")", ",", "comment":
+			continue
+		case "identifier":
+			if *namesLeft == 0 {
+				context.incomplete = true
+				return context
+			}
+			*namesLeft--
+			if context.names == nil {
+				context.names = make(map[string]bool)
+			}
+			name, failure := treeSitterParameterIdentifier(child, data, context.javascript)
+			if failure != treeSitterParameterNone {
+				if context.identityFailure == treeSitterParameterNone {
+					context.identityFailure = failure
+				}
+			} else {
+				context.names[name] = true
+			}
+		default:
+			return nil
+		}
+	}
+	return context
 }
 
 func treeSitterAssignmentParts(node *gotreesitter.Node, grammar *gotreesitter.Language, data []byte, language string, localBlock *gotreesitter.Node, conditional bool) (string, *gotreesitter.Node, bool, bool) {
@@ -337,7 +544,7 @@ func treeSitterModuleLevelAssignment(node *gotreesitter.Node, grammar *gotreesit
 	return false
 }
 
-func resolveTreeSitterProcessValues(language string, call, argument *gotreesitter.Node, grammar *gotreesitter.Language, assignments []treeSitterAssignment, data []byte) ([]string, []report.ValueOrigin, *gotreesitter.Node, bool) {
+func resolveTreeSitterProcessValues(language string, call, argument *gotreesitter.Node, grammar *gotreesitter.Language, assignments []treeSitterAssignment, data []byte, parameters *treeSitterParameters, parameterFailure *treeSitterParameterFailure) ([]string, []report.ValueOrigin, *gotreesitter.Node, bool) {
 	if argument == nil {
 		return nil, nil, argument, false
 	}
@@ -345,7 +552,7 @@ func resolveTreeSitterProcessValues(language string, call, argument *gotreesitte
 	if language == "javascript" {
 		literalType = "string"
 	}
-	values, origins, ok := resolveTreeSitterLiteral(argument, grammar, assignments, data, argument.StartByte(), make(map[string]bool), 0, literalType)
+	values, origins, ok := resolveTreeSitterLiteral(argument, grammar, assignments, data, argument.StartByte(), make(map[string]bool), 0, literalType, parameters, parameterFailure)
 	if !ok || language != "javascript" || call == nil {
 		return values, origins, argument, ok
 	}
@@ -354,7 +561,7 @@ func resolveTreeSitterProcessValues(language string, call, argument *gotreesitte
 	if extraArgument == nil {
 		return values, origins, nil, true
 	}
-	extra, extraOrigins, extraOK := resolveTreeSitterLiteral(extraArgument, grammar, assignments, data, extraArgument.StartByte(), make(map[string]bool), 0, "array")
+	extra, extraOrigins, extraOK := resolveTreeSitterLiteral(extraArgument, grammar, assignments, data, extraArgument.StartByte(), make(map[string]bool), 0, "array", parameters, parameterFailure)
 	if !extraOK {
 		// Knowing the executable does not establish the complete argument list.
 		return nil, nil, extraArgument, false
@@ -369,7 +576,7 @@ func resolveTreeSitterProcessValues(language string, call, argument *gotreesitte
 
 // literalType constrains JavaScript API slots through existing assignment flow.
 // An empty constraint preserves the Python literal-resolution boundary.
-func resolveTreeSitterLiteral(node *gotreesitter.Node, grammar *gotreesitter.Language, assignments []treeSitterAssignment, data []byte, before uint32, seen map[string]bool, depth int, literalType string) ([]string, []report.ValueOrigin, bool) {
+func resolveTreeSitterLiteral(node *gotreesitter.Node, grammar *gotreesitter.Language, assignments []treeSitterAssignment, data []byte, before uint32, seen map[string]bool, depth int, literalType string, parameters *treeSitterParameters, parameterFailure *treeSitterParameterFailure) ([]string, []report.ValueOrigin, bool) {
 	if node == nil || depth > 16 {
 		return nil, nil, false
 	}
@@ -423,7 +630,7 @@ func resolveTreeSitterLiteral(node *gotreesitter.Node, grammar *gotreesitter.Lan
 			} else {
 				child = node.NamedChild(index)
 			}
-			part, partOrigins, ok := resolveTreeSitterLiteral(child, grammar, assignments, data, before, seen, depth+1, partType)
+			part, partOrigins, ok := resolveTreeSitterLiteral(child, grammar, assignments, data, before, seen, depth+1, partType, parameters, parameterFailure)
 			if !ok || len(part) != 1 {
 				return nil, nil, false
 			}
@@ -432,6 +639,10 @@ func resolveTreeSitterLiteral(node *gotreesitter.Node, grammar *gotreesitter.Lan
 		}
 		return values, origins, true
 	case "identifier":
+		if failure := parameters.blockingFailure(node, data); failure != treeSitterParameterNone {
+			*parameterFailure = failure
+			return nil, nil, false
+		}
 		name := treeSitterNodeText(data, node)
 		if seen[name] {
 			return nil, nil, false
@@ -457,7 +668,7 @@ func resolveTreeSitterLiteral(node *gotreesitter.Node, grammar *gotreesitter.Lan
 			return nil, nil, false
 		}
 		seen[name] = true
-		values, origins, ok := resolveTreeSitterLiteral(match.value, grammar, assignments, data, match.offset, seen, depth+1, literalType)
+		values, origins, ok := resolveTreeSitterLiteral(match.value, grammar, assignments, data, match.offset, seen, depth+1, literalType, parameters, parameterFailure)
 		delete(seen, name)
 		if !ok {
 			return nil, nil, false
@@ -527,7 +738,7 @@ func isTreeSitterExecutionAPI(language, command string) bool {
 	return false
 }
 
-func treeSitterDynamicOrigins(argument *gotreesitter.Node, grammar *gotreesitter.Language, assignments []treeSitterAssignment, name string, data []byte, lines sourceIndex) []report.ValueOrigin {
+func treeSitterDynamicOrigins(argument *gotreesitter.Node, grammar *gotreesitter.Language, assignments []treeSitterAssignment, name string, data []byte, lines sourceIndex, parameters *treeSitterParameters) []report.ValueOrigin {
 	if argument == nil {
 		return []report.ValueOrigin{{Kind: report.OriginUseSite, Name: "dynamic value", Evidence: report.Evidence{Path: name, Operation: "dynamic value"}}}
 	}
@@ -544,7 +755,7 @@ func treeSitterDynamicOrigins(argument *gotreesitter.Node, grammar *gotreesitter
 			if !seen[identifier] {
 				origins = append(origins, report.ValueOrigin{Kind: report.OriginUseSite, Name: identifier, Evidence: treeSitterNodeEvidence(name, data, lines, node)})
 				seen[identifier] = true
-				if assignment, ok := nearestTreeSitterAssignment(assignments, identifier, node.StartByte()); ok && len(origins) < report.MaxUnknownOrigins {
+				if assignment, ok := nearestTreeSitterAssignment(assignments, identifier, node.StartByte()); ok && !parameters.blocks(node, data) && len(origins) < report.MaxUnknownOrigins {
 					origins = append(origins, assignment.origin)
 				}
 			}
