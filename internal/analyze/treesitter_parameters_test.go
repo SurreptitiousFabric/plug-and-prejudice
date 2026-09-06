@@ -281,3 +281,376 @@ func TestSimpleFunctionParametersASCIIIdentifierBoundary(t *testing.T) {
 		t.Fatal("language-specific dollar rule")
 	}
 }
+
+// Inspect real parameter/use nodes without constructing reports containing long
+// call excerpts. Report string ceilings must not mask the identity boundary.
+func TestSimpleFunctionParameterIdentityTokenBoundary(t *testing.T) {
+	for _, language := range []string{"javascript", "python"} {
+		for _, position := range []string{"parameter", "use"} {
+			for _, size := range []int{4095, 4096, 4097} {
+				t.Run(fmt.Sprintf("%s/%s/%d", language, position, size), func(t *testing.T) {
+					identifier := strings.Repeat("p", size)
+					parameter, use := identifier, "url"
+					if position == "use" {
+						parameter, use = "other", identifier
+					}
+					source := "function launch(" + parameter + ") {\n child_process.spawn('curl',[" + use + "]);\n}"
+					grammar := grammars.JavascriptLanguage()
+					if language == "python" {
+						source = "def launch(" + parameter + "):\n    subprocess.run(['curl'," + use + "])\n"
+						grammar = grammars.PythonLanguage()
+					}
+					data := []byte(source)
+					parser := ts.NewParser(grammar)
+					parser.SetTimeoutMicros(treeSitterParseTimeoutMicros)
+					tree, err := parser.ParseStrict(data)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tree.Release()
+					if tree.ParseStoppedEarly() || tree.RootNode().HasErrorOrMissing() {
+						t.Fatal("incomplete inert parse")
+					}
+					calls, _, complete, _ := treeSitterOriginIndex(tree.RootNode(), grammar, "helper", data, newSourceIndex(data), language)
+					if !complete || len(calls) != 1 {
+						t.Fatal("missing bounded call context")
+					}
+					for _, call := range calls {
+						if call.parameters == nil {
+							t.Fatal("missing parameter context")
+						}
+						if position == "parameter" {
+							if size <= 4096 && !call.parameters.names[identifier] {
+								t.Fatal("complete parameter name not retained")
+							}
+							if size > 4096 && len(call.parameters.names) != 0 {
+								t.Error("overlength parameter retained a usable prefix")
+							}
+						}
+						stack := []*ts.Node{call.node}
+						found, visited := false, 0
+						for len(stack) > 0 && visited < 32 {
+							node := stack[len(stack)-1]
+							stack = stack[:len(stack)-1]
+							visited++
+							if node.Type(grammar) == "identifier" && string(data[node.StartByte():node.EndByte()]) == use {
+								found = true
+								if got := call.parameters.blocks(node, data); got != (size > 4096) {
+									t.Errorf("identity blocked=%v at %s size=%d", got, position, size)
+								}
+							}
+							for i := node.ChildCount() - 1; i >= 0; i-- {
+								stack = append(stack, node.Child(i))
+							}
+						}
+						if !found || len(stack) != 0 {
+							t.Fatal("use not found within bounded traversal")
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestSimpleFunctionParameterUncertaintyCause(t *testing.T) {
+	for _, form := range []string{
+		"child_process.spawn('curl', ['https://example.test'], callback)",
+		"child_process.spawn('curl', ['https://example.test'], {shell: true})",
+		"child_process.spawn('curl', buildArguments())",
+	} {
+		t.Run(form, func(t *testing.T) {
+			// The first call requires identity evidence; the second fails for a
+			// different reason in the same context; the third is a literal control.
+			source := "const url='https://example.test';\nfunction launch(é) {\n child_process.spawn('curl',[url]);\n " + form + ";\n child_process.spawn('printf',['ok']);\n}"
+			result := simpleParameterResult("javascript", source)
+			var affected, control report.Operation
+			for _, op := range result.Operations {
+				if op.Category == "language-call" && op.Command == "child_process.spawn" && op.Evidence.LineStart == 4 {
+					affected = op
+				}
+				if op.Category == "process-execution-via-javascript" && op.Command == "printf" {
+					control = op
+				}
+			}
+			if affected.ID == "" || !affected.Dynamic || control.Command != "printf" || !reflect.DeepEqual(control.Arguments, []string{"ok"}) || len(result.Resources) != 0 {
+				t.Fatal("call form/control evidence changed")
+			}
+			found := false
+			for _, u := range result.Unknowns {
+				if !reflect.DeepEqual(u.AffectedOperations, []string{affected.ID}) {
+					continue
+				}
+				found = true
+				if u.Reason != report.UnknownUnresolvedFlow || u.Category != "unresolved-process-arguments" || !strings.Contains(u.Description, "literal-argument boundary") || strings.Contains(u.Description, "identity") {
+					t.Errorf("unrelated identity context replaced actual call-form cause: %q", u.Description)
+				}
+			}
+			if !found {
+				t.Fatal("call-form unknown missing")
+			}
+		})
+	}
+}
+
+func TestSimpleFunctionParameterIdentifierSpan(t *testing.T) {
+	leaf := func(start, end uint32) *ts.Node {
+		return ts.NewLeafNode(0, true, start, end, ts.Point{}, ts.Point{})
+	}
+	for _, test := range []struct {
+		name    string
+		node    *ts.Node
+		data    string
+		want    string
+		failure treeSitterParameterFailure
+	}{
+		{"nil-node", nil, "url", "", treeSitterParameterSpan},
+		{"empty-span", leaf(1, 1), "url", "", treeSitterParameterSpan},
+		{"reversed-span", leaf(2, 1), "url", "", treeSitterParameterSpan},
+		{"end-outside", leaf(0, 4), "url", "", treeSitterParameterSpan},
+		{"both-outside", leaf(4, 5), "url", "", treeSitterParameterSpan},
+		{"large-end", leaf(0, ^uint32(0)), "url", "", treeSitterParameterSpan},
+		{"no-source", leaf(0, 3), "", "", treeSitterParameterSpan},
+		{"complete", leaf(0, 3), "url", "url", treeSitterParameterNone},
+		{"nonzero-offset", leaf(2, 5), "!!url!", "url", treeSitterParameterNone},
+		{"nonascii", leaf(0, 2), "é", "", treeSitterParameterSpelling},
+		{"escaped", leaf(0, 8), `\u0075rl`, "", treeSitterParameterSpelling},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			name, failure := treeSitterParameterIdentifier(test.node, []byte(test.data), true)
+			if name != test.want || failure != test.failure {
+				t.Fatalf("complete identity=%q cause=%d, want %q cause=%d", name, failure, test.want, test.failure)
+			}
+		})
+	}
+	for _, size := range []int{4095, 4096, 4097} {
+		t.Run(fmt.Sprintf("bytes-%d", size), func(t *testing.T) {
+			identifier := strings.Repeat("p", size)
+			name, failure := treeSitterParameterIdentifier(leaf(2, uint32(size+2)), []byte("!!"+identifier+"!"), false)
+			if size <= 4096 {
+				if name != identifier || failure != treeSitterParameterNone {
+					t.Fatal("complete bounded identifier unavailable")
+				}
+			} else if name != "" || failure != treeSitterParameterLength {
+				t.Fatal("overlength identity became a usable prefix")
+			}
+		})
+	}
+	for _, identifier := range []string{strings.Repeat("p", 4094) + "é", strings.Repeat("p", 4090) + `\u0078`} {
+		name, failure := treeSitterParameterIdentifier(leaf(0, uint32(len(identifier))), []byte(identifier), true)
+		if len(identifier) != 4096 || name != "" || failure != treeSitterParameterSpelling {
+			t.Fatal("complete token suffix was not inspected")
+		}
+	}
+}
+
+func TestSimpleFunctionParameterResolutionBudgetCause(t *testing.T) {
+	for _, language := range []string{"javascript", "python"} {
+		for _, use := range []string{"url", "'https://example.test'"} {
+			source := "function launch(url) { child_process.spawn('curl',[" + use + "]); }"
+			grammar := grammars.JavascriptLanguage()
+			if language == "python" {
+				source = "def launch(url):\n    subprocess.run(['curl'," + use + "])"
+				grammar = grammars.PythonLanguage()
+			}
+			data := []byte(source)
+			parser := ts.NewParser(grammar)
+			parser.SetTimeoutMicros(treeSitterParseTimeoutMicros)
+			tree, err := parser.ParseStrict(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tree.Release()
+			if tree.ParseStoppedEarly() || tree.RootNode().HasErrorOrMissing() {
+				t.Fatal("incomplete inert parse")
+			}
+			calls, assignments, complete, _ := treeSitterOriginIndex(tree.RootNode(), grammar, "helper", data, newSourceIndex(data), language)
+			if !complete || len(calls) != 1 {
+				t.Fatal("missing bounded call")
+			}
+			for _, call := range calls {
+				call.parameters.incomplete = true
+				var failure treeSitterParameterFailure
+				_, _, _, resolved := resolveTreeSitterProcessValues(language, call.node, firstTreeSitterArgument(call.node, grammar, language), grammar, assignments, data, call.parameters, &failure)
+				if use == "url" {
+					if resolved || failure != treeSitterParameterBudget {
+						t.Fatal("identifier lost actual context-budget cause")
+					}
+				} else if !resolved || failure != treeSitterParameterNone {
+					t.Fatal("literal acquired unrelated context-budget cause")
+				}
+			}
+		}
+	}
+}
+
+// Synthetic target text is consumed only as parser/analyser bytes.
+func TestSimpleFunctionParameterIdentityUncertainty(t *testing.T) {
+	long := strings.Repeat("p", 4096)
+	for _, tc := range []struct{ name, lang, module, parameter, use string }{
+		{"js-escape4-parameter", "javascript", "url", `\u0075rl`, "url"},
+		{"js-escape4-use", "javascript", `\u0075rl`, "url", `\u0075rl`},
+		{"js-escape-brace-parameter", "javascript", "url", `\u{75}rl`, "url"},
+		{"js-escape-brace-use", "javascript", `\u{75}rl`, "url", `\u{75}rl`},
+		{"py-kelvin-parameter", "python", "K", "K", "K"},
+		{"py-kelvin-use", "python", "K", "K", "K"},
+		{"py-general-identity", "python", "url", "é", "url"},
+		{"js-overlength-parameter", "javascript", "url", long + "x", "url"},
+		{"js-nonascii-after-truncation", "javascript", "url", long + "é", "url"},
+		{"py-overlength-parameter", "python", "url", long + "x", "url"},
+		{"py-nonascii-after-truncation", "python", "url", long + "é", "url"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := "const " + tc.module + "='https://example.test';\nfunction launch(" + tc.parameter + ") {\n child_process.spawn('curl',[" + tc.use + "]);\n }"
+			grammar := grammars.JavascriptLanguage()
+			if tc.lang == "python" {
+				source = tc.module + "='https://example.test'\ndef launch(" + tc.parameter + "):\n    subprocess.run(['curl'," + tc.use + "])\n"
+				grammar = grammars.PythonLanguage()
+			}
+			parser := ts.NewParser(grammar)
+			parser.SetTimeoutMicros(treeSitterParseTimeoutMicros)
+			tree, err := parser.ParseStrict([]byte(source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tree.Release()
+			if tree.RootNode().HasErrorOrMissing() || tree.ParseStoppedEarly() {
+				t.Fatal("probe did not parse as complete inert source")
+			}
+			r := simpleParameterResult(tc.lang, source)
+			var call report.Operation
+			for _, op := range r.Operations {
+				if op.Category == "language-call" {
+					call = op
+				}
+				if op.Category == "process-execution-via-"+tc.lang {
+					t.Errorf("unsupported identity selected command=%q arguments=%q dynamic=%v confidence=%s", op.Command, op.Arguments, op.Dynamic, op.Confidence)
+				}
+			}
+			if len(r.Resources) != 0 {
+				t.Errorf("unsupported identity produced %d dependent resources, first=%s:%s", len(r.Resources), r.Resources[0].Kind, r.Resources[0].Value)
+			}
+			if call.ID == "" || !call.Dynamic || call.Confidence != report.ConfidenceMedium {
+				t.Errorf("affected call ID=%q dynamic=%v confidence=%s", call.ID, call.Dynamic, call.Confidence)
+			}
+			if len(r.Unknowns) != 1 {
+				t.Fatalf("affected call %s needs identity uncertainty, unknown count=%d", call.ID, len(r.Unknowns))
+			}
+			u := r.Unknowns[0]
+			if u.Reason != report.UnknownUnresolvedFlow || u.Category != "unresolved-process-arguments" || !reflect.DeepEqual(u.AffectedOperations, []string{call.ID}) {
+				t.Errorf("incorrect call-linked identity uncertainty: reason=%s category=%s affected=%v", u.Reason, u.Category, u.AffectedOperations)
+			}
+			for _, o := range u.Origins {
+				if o.Kind == report.OriginAssignment {
+					t.Errorf("unsupported identity cited assignment origin %q", o.Name)
+				}
+			}
+			text := strings.ToLower(u.Title + " " + u.Description)
+			if !strings.Contains(text, "identifier identity") || strings.Contains(text, "cited assignment") || strings.Contains(text, "options") || strings.Contains(text, "callback") || strings.Contains(text, "selected at runtime") {
+				t.Errorf("unknown does not explain unsupported identifier identity: title=%q description=%q", u.Title, u.Description)
+			}
+			cause := "spelling"
+			if len(tc.parameter) > 4096 {
+				cause = "4,096"
+			}
+			if !strings.Contains(u.Description, cause) {
+				t.Errorf("identity cause %q missing from %q", cause, u.Description)
+			}
+			if strings.Contains(u.Title, "executable") || !strings.Contains(u.Description, "executable") {
+				t.Errorf("known executable distinction lost: %q / %q", u.Title, u.Description)
+			}
+		})
+	}
+}
+
+func TestSimpleFunctionParameterIdentityPreservation(t *testing.T) {
+	for _, tc := range []struct {
+		name, lang, source string
+		command, argument  string
+	}{
+		{"js-case-sensitive", "javascript", "const url='https://example.test'; function launch(URL) { child_process.spawn('curl',[url]); }", "curl", "https://example.test"},
+		{"py-case-sensitive", "python", "url='https://example.test'\ndef launch(URL):\n    subprocess.run(['curl',url])", "curl", "https://example.test"},
+		{"js-comment-and-string", "javascript", "function launch(/* \\u{75}rl K */ other) { child_process.spawn('printf',[\"K \\\\u0075rl // /* text */\"]); }", "printf", `K \u0075rl // /* text */`},
+		{"py-comment-and-string", "python", "def launch(other): # K \\u0075rl\n    subprocess.run(['printf',\"K \\\\u0075rl // /* text */\"])", "printf", `K \u0075rl // /* text */`},
+		{"js-incomplete-literal", "javascript", "function launch(é) { child_process.spawn('curl',['https://example.test']); }", "curl", "https://example.test"},
+		{"py-incomplete-literal", "python", "def launch(é):\n    subprocess.run(['curl','https://example.test'])", "curl", "https://example.test"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := simpleParameterResult(tc.lang, tc.source)
+			var process report.Operation
+			for _, op := range r.Operations {
+				if op.Category == "process-execution-via-"+tc.lang {
+					process = op
+				}
+			}
+			if process.Command != tc.command || !reflect.DeepEqual(process.Arguments, []string{tc.argument}) || process.Dynamic || process.Confidence != report.ConfidenceHigh || len(r.Unknowns) != 0 {
+				t.Fatalf("preservation changed: command=%q args=%q dynamic=%v confidence=%s unknowns=%v", process.Command, process.Arguments, process.Dynamic, process.Confidence, r.Unknowns)
+			}
+		})
+	}
+}
+
+func TestSimpleFunctionParameterExecutableIdentityUncertainty(t *testing.T) {
+	for _, tc := range []struct{ lang, source string }{
+		{"javascript", "const command='curl'; function launch(é) { child_process.spawn(command,['https://example.test']); }"},
+		{"python", "command=['curl','https://example.test']\ndef launch(é):\n    subprocess.run(command)"},
+	} {
+		t.Run(tc.lang, func(t *testing.T) {
+			r := simpleParameterResult(tc.lang, tc.source)
+			var call report.Operation
+			for _, op := range r.Operations {
+				if op.Category == "language-call" {
+					call = op
+				}
+				if op.Category == "process-execution-via-"+tc.lang {
+					t.Errorf("unsupported identity selected process %s", op.Command)
+				}
+			}
+			if call.ID == "" || !call.Dynamic || len(r.Resources) != 0 || len(r.Unknowns) != 1 {
+				t.Fatalf("missing bounded uncertainty: call=%s dynamic=%v resources=%d unknowns=%d", call.ID, call.Dynamic, len(r.Resources), len(r.Unknowns))
+			}
+			u := r.Unknowns[0]
+			if u.Category != "unresolved-command" || !reflect.DeepEqual(u.AffectedOperations, []string{call.ID}) {
+				t.Fatal("unknown lost executable/call relationship")
+			}
+			for _, o := range u.Origins {
+				if o.Kind == report.OriginAssignment {
+					t.Error("unrelated module assignment origin retained")
+				}
+			}
+			if !strings.Contains(strings.ToLower(u.Title+" "+u.Description), "identity") || strings.Contains(u.Title, "selected at runtime") || strings.Contains(u.Description, "cited assignment") || !strings.Contains(u.Description, "spelling") {
+				t.Errorf("unsupported identity presented as runtime selection: title=%q description=%q", u.Title, u.Description)
+			}
+		})
+	}
+}
+
+func TestSimpleFunctionParameterIdentityWrappersAndBodies(t *testing.T) {
+	for _, tc := range []struct{ name, lang, source string }{
+		{"js-plain", "javascript", "const url='https://example.test'; function launch(url) { child_process.spawn('curl',[url]); }"},
+		{"js-export", "javascript", "const url='https://example.test'; export /* before */ function launch(/* arg */ url) { child_process.spawn('curl',[url]); }"},
+		{"js-default", "javascript", "const url='https://example.test'; export /* before */ default /* middle */ function launch(url) { child_process.spawn('curl',[url]); }"},
+		{"py-yield", "python", "url='https://example.test'\ndef launch(url):\n    yield 1\n    subprocess.run(['curl',url])"},
+		{"py-reassignment", "python", "url='https://example.test'\ndef launch(url):\n    url='https://replacement.test'\n    subprocess.run(['curl',url])"},
+		{"js-reassignment", "javascript", "const url='https://example.test'; function launch(url) { url='https://replacement.test'; child_process.spawn('curl',[url]); }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := simpleParameterResult(tc.lang, tc.source)
+			var call report.Operation
+			for _, op := range r.Operations {
+				if op.Category == "language-call" {
+					call = op
+				}
+				if op.Category == "process-execution-via-"+tc.lang {
+					t.Errorf("selected process=%s args=%q", op.Command, op.Arguments)
+				}
+			}
+			if call.ID == "" || !call.Dynamic || len(r.Resources) != 0 || len(r.Unknowns) != 1 {
+				t.Fatalf("conservative result absent: dynamic=%v resources=%d unknowns=%d", call.Dynamic, len(r.Resources), len(r.Unknowns))
+			}
+			if !reflect.DeepEqual(r.Unknowns[0].AffectedOperations, []string{call.ID}) {
+				t.Fatal("unknown is not exactly linked to call")
+			}
+		})
+	}
+}
