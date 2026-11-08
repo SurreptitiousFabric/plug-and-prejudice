@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"example.credential-read","name":"Credential read fixture","version":"1.0.0","kinds":["panel"],"entryPoints":{"panel":"Panel.qml"}}

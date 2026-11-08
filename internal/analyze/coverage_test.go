@@ -6,14 +6,36 @@ import (
 	"github.com/SurreptitiousFabric/plug-and-prejudice/internal/report"
 )
 
-func TestRuntimePythonCreatesExplicitCoverageLimitation(t *testing.T) {
+func TestRuntimePythonReceivesSyntaxTreeAnalysis(t *testing.T) {
 	result := Sources(withValidManifest(map[string][]byte{
 		"Runtime.qml": []byte("property string helper: \"helper.py\"\n"),
 		"helper.py":   []byte("import subprocess\nsubprocess.run(['whoami'])\n"),
 	}))
-	limitation := limitationByCode(t, result, "python-semantic-analysis-unavailable")
-	if limitation.Path != "helper.py" || limitation.Scope != report.ScopeRuntime {
-		t.Fatalf("runtime Python gap not scoped: %#v", limitation)
+	if len(result.Operations) != 2 || result.Operations[0].Command != "subprocess.run" || result.Operations[1].Command != "whoami" || result.Operations[1].Scope != report.ScopeRuntime {
+		t.Fatalf("runtime Python operations = %#v", result.Operations)
+	}
+}
+
+func TestCoverageSummaryUsesExplicitSupportedArtifactFileUnits(t *testing.T) {
+	files := []report.File{
+		{Path: "manifest.json", Kind: "regular", Inspected: true},
+		{Path: "Panel.qml", Kind: "regular", Inspected: true},
+		{Path: "helper.go", Kind: "regular", Inspected: true},
+		{Path: "helper.elf", Kind: "regular", Inspected: true, Binary: &report.Binary{Format: "ELF"}},
+		{Path: "oversized.js", Kind: "regular", Inspected: false},
+		{Path: "README.md", Kind: "regular", Inspected: true},
+	}
+	contents := map[string][]byte{"manifest.json": []byte("{}"), "Panel.qml": []byte("Item {}"), "helper.go": []byte("package main"), "README.md": []byte("text")}
+	coverage := SummarizeCoverage(files, contents, []report.Limitation{{Code: "qml", Description: "partial", Path: "Panel.qml"}}, nil)
+	if coverage.AnalyzedUnits != 1 || coverage.PartialUnits != 2 || coverage.UnanalyzedUnits != 2 || coverage.TotalUnits != 5 || coverage.Percentage == nil || *coverage.Percentage != 20 || coverage.Level != "partial" {
+		t.Fatalf("coverage = %#v", coverage)
+	}
+}
+
+func TestCoverageSummaryDoesNotPublishPercentageWithoutEligibleUnits(t *testing.T) {
+	coverage := SummarizeCoverage([]report.File{{Path: "README.md", Kind: "regular", Inspected: true}}, map[string][]byte{"README.md": []byte("text")}, nil, nil)
+	if coverage.TotalUnits != 0 || coverage.Percentage != nil || coverage.Level != "not-applicable" {
+		t.Fatalf("empty coverage = %#v", coverage)
 	}
 }
 
@@ -28,14 +50,13 @@ func TestToolingPythonDoesNotMakeRuntimeCoverageIncomplete(t *testing.T) {
 	}
 }
 
-func TestRuntimeJavaScriptCreatesExplicitCoverageLimitation(t *testing.T) {
+func TestRuntimeJavaScriptReceivesSyntaxTreeAnalysis(t *testing.T) {
 	result := Sources(withValidManifest(map[string][]byte{
 		"Runtime.qml": []byte("property string model: \"Model.js\"\n"),
-		"Model.js":    []byte("function endpoint() { return 'https://example.test' }\n"),
+		"Model.js":    []byte("function endpoint() { return fetch('https://example.test') }\n"),
 	}))
-	limitation := limitationByCode(t, result, "javascript-semantic-analysis-unavailable")
-	if limitation.Scope != report.ScopeRuntime {
-		t.Fatalf("runtime JavaScript gap not scoped: %#v", limitation)
+	if len(result.Operations) != 1 || result.Operations[0].Command != "fetch" || result.Operations[0].Scope != report.ScopeRuntime {
+		t.Fatalf("runtime JavaScript operations = %#v", result.Operations)
 	}
 }
 

@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"example.suspicious-subprocess","name":"Subprocess fixture","version":"1.0.0","kinds":["panel"],"entryPoints":{"panel":"Panel.qml"}}

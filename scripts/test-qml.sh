@@ -37,15 +37,17 @@ mkdir -p "$work/imports/qs"
 ln -s "$omarchy_qml_root/Commons" "$work/imports/qs/Commons"
 ln -s "$omarchy_qml_root/Ui" "$work/imports/qs/Ui"
 
-set +e
-lint_output=$($qml_lint -I "$work/imports" -I /usr/lib/qt6/qml Panel.qml 2>&1)
-lint_status=$?
-set -e
-if (( lint_status != 0 )) || grep -E -q '\[(syntax|unqualified)\]' <<<"$lint_output"; then
-  printf '%s\n' "$lint_output" >&2
-  echo "test-qml: QML type validation failed" >&2
-  exit 1
-fi
+for source in Panel.qml tests/PanelVisualHarness.qml; do
+  set +e
+  lint_output=$($qml_lint -I "$work/imports" -I . -I /usr/lib/qt6/qml "$source" 2>&1)
+  lint_status=$?
+  set -e
+  if (( lint_status != 0 )) || grep -E -q '\[(syntax|unqualified)\]' <<<"$lint_output"; then
+    printf '%s\n' "$lint_output" >&2
+    echo "test-qml: QML type validation failed: $source" >&2
+    exit 1
+  fi
+done
 
 cp Panel.qml "$work/Panel.qml"
 cp tests/PanelLoadTest.qml "$work/shell.qml"

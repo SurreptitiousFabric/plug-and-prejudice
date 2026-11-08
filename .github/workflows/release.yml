@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -tags=grammar_subset,grammar_subset_python,grammar_subset_javascript
+
+jobs:
+  build:
+    name: Native build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Validate tag and source identity
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git describe --tags --exact-match HEAD)" = "v$version"
+          git diff --exit-code
+      - name: Test release source
+        run: |
+          go mod verify
+          go test -race ./...
+          go vet ./...
+          scripts/verify-production-dependencies.sh
+          scripts/verify-vulnerabilities.sh
+      - name: Build native static PIE binaries
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          tags='netgo osusergo grammar_subset grammar_subset_python grammar_subset_javascript'
+          ldflags="-linkmode external -extldflags -static-pie -X github.com/SurreptitiousFabric/plug-and-prejudice/internal/buildinfo.Version=$version"
+          mkdir dist
+          for name in plug-prejudice plug-prejudice-broker; do
+            CGO_ENABLED=1 go build -mod=readonly -buildvcs=false -trimpath -buildmode=pie -tags "$tags" -ldflags "$ldflags" -o "dist/$name-linux-${{ matrix.arch }}" "./cmd/$name"
+            "dist/$name-linux-${{ matrix.arch }}" --version | grep -Fq "\"reviewerVersion\":\"$version\""
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Bind, attest, and publish release artifacts
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: native-*
+          path: dist
+          merge-multiple: true
+      - name: Install integrity-pinned CycloneDX generator
+        run: |
+          tool_dir=$(scripts/install-release-sbom-tool.sh .release-tools)
+          echo "$tool_dir" >> "$GITHUB_PATH"
+      - name: Generate and verify SBOM and checksums
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          scripts/generate-release-metadata.sh "$version" dist
+          (cd dist && sha256sum --check "plug-and-prejudice-$version.sha256")
+      - name: Attest every published subject
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: dist/*
+      - name: Publish immutable tag artifacts
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
